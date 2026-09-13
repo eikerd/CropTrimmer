@@ -183,6 +183,29 @@ final class MediaEngineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
     }
 
+    func testEmbeddedCoverArtIsIgnoredForInspectionAndExport() async throws {
+        // FFmpeg's MP4 muxer stores cover art as an extra video stream flagged attached_pic.
+        let cover = directory.appendingPathComponent("cover.png")
+        try ff(["-f", "lavfi", "-i", "color=blue:size=64x64", "-frames:v", "1", cover.path])
+        let url = directory.appendingPathComponent("art.mp4")
+        try ff(["-i", cover.path, "-i", fixture().path, "-map", "0", "-map", "1", "-c:v:0", "png", "-c:v:1", "copy", "-disposition:v:0", "attached_pic", url.path])
+        let engine = MediaEngine()
+        let source = try await engine.inspect(url)
+        XCTAssertEqual(source.width, 160); XCTAssertEqual(source.height, 120)
+        XCTAssertEqual(source.videoCodec, "h264")
+        var edit = EditSettings(source: source)
+        edit.start = 1; edit.end = 3
+        let plan = try await engine.plan(source: source, settings: edit)
+        XCTAssertEqual(plan.method, .copy)
+        let result = try await engine.export(plan: plan, to: directory.appendingPathComponent("art-copy.mp4")) { _, _ in }
+        XCTAssertEqual(result.width, 160)
+        XCTAssertEqual(result.actualStart, 1, accuracy: 0.001)
+        XCTAssertEqual(result.actualEnd, 3, accuracy: 0.001)
+        edit.cropEnabled = true; edit.crop = PixelRect(x: 20, y: 10, width: 80, height: 60)
+        let encoded = try await engine.export(plan: try await engine.plan(source: source, settings: edit), to: directory.appendingPathComponent("art-crop.mp4")) { _, _ in }
+        XCTAssertEqual(encoded.width, 80); XCTAssertEqual(encoded.height, 60)
+    }
+
     private func fixture(gop: Int = 25) throws -> URL {
         let url = directory.appendingPathComponent("source-\(gop).mp4")
         try ff(["-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "4", "-c:v", "libx264", "-g", String(gop), "-sc_threshold", "0", "-pix_fmt", "yuv420p", url.path])

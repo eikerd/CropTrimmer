@@ -18,12 +18,16 @@ public actor MediaEngine {
         let identity = try SourceIdentity(url: url)
         let object = try await probe(url)
         let streams = object["streams"] as? [[String: Any]] ?? []
-        guard let video = streams.first(where: { ($0["codec_type"] as? String) == "video" }),
-              let w = video["width"] as? Int, let h = video["height"] as? Int, w >= 2, h >= 2 else {
-            throw MediaError.invalid("This file does not contain a supported movie picture.")
+        // Cover art is muxed as a video stream flagged attached_pic and may precede the movie.
+        // Every FFmpeg/ffprobe invocation below uses the `V` specifier, which skips such streams.
+        let pictures = streams.filter { ($0["codec_type"] as? String) == "video" }
+        let movies = pictures.filter { (($0["disposition"] as? [String: Any])?["attached_pic"] as? Int ?? 0) == 0 }
+        guard !pictures.isEmpty, !movies.isEmpty else {
+            throw MediaError.invalid(pictures.isEmpty ? "This file does not contain a supported movie picture."
+                                                      : "Every video stream is an attached image, not a movie.")
         }
-        guard ((video["disposition"] as? [String: Any])?["attached_pic"] as? Int ?? 0) == 0 else {
-            throw MediaError.invalid("The first video stream is an attached image, not a movie.")
+        guard let video = movies.first, let w = video["width"] as? Int, let h = video["height"] as? Int, w >= 2, h >= 2 else {
+            throw MediaError.invalid("This file does not contain a supported movie picture.")
         }
         let format = object["format"] as? [String: Any] ?? [:]
         let start = number(video["start_time"]) ?? number(format["start_time"]) ?? 0
@@ -200,7 +204,7 @@ public actor MediaEngine {
     private struct Packet { let pts: Double; let dts: Double; let duration: Double; let key: Bool }
     private func packets(_ url: URL, around time: Double, duration: Double) async throws -> [Packet] {
         let interval = decimal(max(0, time - 8)) + "%" + decimal(min(duration + 0.1, time + 8))
-        let data = try await run("ffprobe", arguments: ["-v", "error", "-select_streams", "v:0", "-read_intervals", interval, "-show_packets", "-show_entries", "packet=pts_time,dts_time,duration_time,flags", "-of", "json", url.path], outputLimit: 8_000_000)
+        let data = try await run("ffprobe", arguments: ["-v", "error", "-select_streams", "V:0", "-read_intervals", interval, "-show_packets", "-show_entries", "packet=pts_time,dts_time,duration_time,flags", "-of", "json", url.path], outputLimit: 8_000_000)
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         return (object["packets"] as? [[String: Any]] ?? []).compactMap { packet in
             guard let pts = number(packet["pts_time"]), let dts = number(packet["dts_time"]), let length = number(packet["duration_time"]), length > 0 else { return nil }
@@ -210,7 +214,7 @@ public actor MediaEngine {
 
     private func encodeArguments(_ plan: ExportPlan, output: URL) -> [String] {
         var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", decimal(plan.settings.start), "-i", plan.source.url.path,
-                    "-t", decimal(plan.settings.duration), "-map", "0:v:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1"]
+                    "-t", decimal(plan.settings.duration), "-map", "0:V:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1"]
         if plan.settings.cropEnabled {
             let c = plan.settings.crop
             args += ["-vf", "crop=\(c.width):\(c.height):\(c.x):\(c.y)"]
@@ -229,7 +233,7 @@ public actor MediaEngine {
         if plan.source.audioCount > 0 {
             args += ["-ss", decimal(plan.plannedStart), "-t", decimal(plan.duration), "-i", plan.source.url.path]
         }
-        args += ["-map", "0:v:0"]
+        args += ["-map", "0:V:0"]
         if plan.source.audioCount > 0 { args += ["-map", "1:a"] }
         args += ["-map_chapters", "-1", "-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4", output.path]
         return args
@@ -238,7 +242,7 @@ public actor MediaEngine {
     private struct Fingerprint { let time: Double; let duration: Double; let hash: String }
     private func fingerprints(_ url: URL, from start: Double, length: Double, origin: Double = 0) async throws -> [Fingerprint] {
         let bytes = try await run("ffmpeg", arguments: ["-hide_banner", "-loglevel", "error", "-nostdin", "-copyts", "-ss", decimal(max(0, start)), "-i", url.path,
-                    "-to", decimal(origin + start + length), "-map", "0:v:0", "-an", "-fps_mode", "passthrough", "-enc_time_base", "-1", "-f", "framemd5", "pipe:1"], outputLimit: 2_000_000)
+                    "-to", decimal(origin + start + length), "-map", "0:V:0", "-an", "-fps_mode", "passthrough", "-enc_time_base", "-1", "-f", "framemd5", "pipe:1"], outputLimit: 2_000_000)
         let lines = String(decoding: bytes, as: UTF8.self).split(separator: "\n")
         var timeBase = 0.0
         var result: [Fingerprint] = []
@@ -289,7 +293,7 @@ public actor MediaEngine {
         let starts = output.duration <= 20 ? [0.0] : [0.0, max(0, output.duration - 3)]
         for start in starts {
             _ = try await run("ffmpeg", arguments: ["-hide_banner", "-loglevel", "error", "-xerror", "-nostdin", "-ss", decimal(start), "-i", output.url.path,
-                "-t", decimal(output.duration <= 20 ? output.duration : 3), "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"])
+                "-t", decimal(output.duration <= 20 ? output.duration : 3), "-map", "0:V:0", "-map", "0:a?", "-f", "null", "-"])
         }
     }
 
