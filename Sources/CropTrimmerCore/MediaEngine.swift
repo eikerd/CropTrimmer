@@ -371,6 +371,10 @@ public actor MediaEngine {
             }
         }
         if token != cancellation || Task.isCancelled { throw MediaError.cancelled }
+        // A process can exit between polls, so the limit is enforced once more on the final files.
+        let finalSize = (try? SourceIdentity(url: stdout).size) ?? 0
+        let finalErrorSize = (try? SourceIdentity(url: stderr).size) ?? 0
+        if finalSize > outputLimit || finalErrorSize > 2_000_000 { exceeded = true }
         if exceeded { throw MediaError.failed("Media inspection exceeded its bounded output limit. Choose Accurate trim or a different source.") }
         guard process.terminationStatus == 0 else {
             let diagnostics = (try? Data(contentsOf: stderr)).map { String(decoding: $0.suffix(6_000), as: UTF8.self) } ?? ""
