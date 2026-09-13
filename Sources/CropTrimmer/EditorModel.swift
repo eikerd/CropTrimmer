@@ -76,11 +76,14 @@ final class EditorModel: ObservableObject {
                       NSApp.keyWindow?.attachedSheet == nil,
                       !(NSApp.keyWindow is NSPanel),
                       !(NSApp.keyWindow?.firstResponder is NSTextView),
-                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
+                      event.modifierFlags.isDisjoint(with: [.command, .control, .option]) else { return false }
                 switch event.charactersIgnoringModifiers?.lowercased() {
                 case "i": self.setStart(); return true
                 case "o": self.setEnd(); return true
-                case " ": self.togglePlayback(); return true
+                case " ":
+                    // A focused AppKit control (button, popup, slider, field) owns Space for activation.
+                    guard !(NSApp.keyWindow?.firstResponder is NSControl) else { return false }
+                    self.togglePlayback(); return true
                 default: return false
                 }
             }
