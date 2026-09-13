@@ -1,0 +1,230 @@
+import AppKit
+import AVFoundation
+import XCTest
+@testable import CropTrimmer
+import CropTrimmerCore
+
+final class EditorIntegrationTests: XCTestCase {
+    @MainActor
+    private func waitUntil(_ condition: () -> Bool, timeout: Double = 15) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertTrue(condition(), "Timed out waiting for editor state")
+    }
+
+    @MainActor
+    func testTransportAndIndependentQueueExports() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = "/opt/homebrew/bin/ffmpeg"
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-editor-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Fixture.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "12", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy }
+        XCTAssertNotNil(model.source, model.errorMessage ?? "Open failed")
+        try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+        model.settings.start = 1; model.settings.end = 3
+        let handleOriginal = try XCTUnwrap(model.loops.selected)
+        model.beginLoopDrag(handleOriginal.id)
+        model.dragLoopHandle(start: true, original: handleOriginal, by: 2)
+        XCTAssertEqual(model.settings.start, 3)
+        XCTAssertEqual(model.settings.end, 5)
+        XCTAssertEqual(model.settings.duration, 2)
+        // Repeated drag events use the captured range, not the last event's result.
+        model.dragLoopHandle(start: true, original: handleOriginal, by: 3)
+        XCTAssertEqual(model.settings.start, 4)
+        XCTAssertEqual(model.settings.end, 6)
+        model.dragLoopHandle(start: true, original: handleOriginal, by: 100)
+        XCTAssertEqual(model.settings.start, 10)
+        XCTAssertEqual(model.settings.end, 12)
+        XCTAssertEqual(model.settings.duration, 2)
+        model.dragLoopHandle(start: true, original: handleOriginal, by: -100)
+        XCTAssertEqual(model.settings.start, 0)
+        XCTAssertEqual(model.settings.end, 2)
+        model.dragLoopHandle(start: false, original: try XCTUnwrap(model.loops.selected), by: 1)
+        XCTAssertEqual(model.settings.start, 0)
+        XCTAssertEqual(model.settings.end, 3)
+        model.settings.start = 1; model.settings.end = 3
+        model.recallStart()
+        try await waitUntil { abs(model.player.currentTime().seconds - 1) < 0.05 }
+        model.step(1)
+        try await waitUntil { model.position > 1.02 }
+        let stepped = model.position
+        model.step(-1)
+        try await waitUntil { model.position < stepped - 0.02 }
+        model.jump(5)
+        try await waitUntil { model.position > 5.9 }
+        model.jump(-5)
+        try await waitUntil { model.position < 1.1 }
+        model.beginCrop()
+        model.togglePlayback()
+        XCTAssertFalse(model.cropAdjusting)
+        try await waitUntil { model.isPlaying && model.position > 1.2 }
+        model.togglePlayback()
+        XCTAssertFalse(model.isPlaying)
+        model.stop()
+        try await waitUntil { abs(model.player.currentTime().seconds - 1) < 0.05 }
+        // Paused navigation to B must not trigger repeat playback.
+        model.recallEnd()
+        try await waitUntil { abs(model.player.currentTime().seconds - 3) < 0.05 }
+        XCTAssertFalse(model.isPlaying)
+        model.settings.end = 1.4
+        model.playbackMode = .once
+        model.togglePlayback()
+        try await waitUntil { !model.isPlaying && abs(model.position - 1.4) < 0.05 }
+        model.playbackMode = .repeatSelection
+        model.togglePlayback()
+        try await Task.sleep(for: .milliseconds(750))
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertGreaterThanOrEqual(model.position, 1)
+        XCTAssertLessThan(model.position, 1.45)
+        model.stop()
+        model.playbackMode = .whole
+        model.stop()
+        try await waitUntil { model.player.currentTime().seconds < 0.05 }
+        model.muted = true; model.volume = 0.4
+        XCTAssertTrue(model.player.isMuted)
+        XCTAssertEqual(model.player.volume, 0.4, accuracy: 0.001)
+        model.settings.end = 3
+        let first = try XCTUnwrap(model.loops.selectedID)
+        model.settings.cropEnabled = true
+        model.settings.crop = PixelRect(width: 80, height: 60)
+        model.setCropAspectRatio(.square)
+        XCTAssertEqual(model.settings.crop.width, model.settings.crop.height)
+        let lockedCrop = model.settings.crop
+        model.toggleCropAspectLock()
+        XCTAssertEqual(model.settings.cropAspectRatio, .free)
+        XCTAssertEqual(model.settings.crop, lockedCrop)
+        model.toggleCropAspectLock()
+        XCTAssertEqual(model.settings.cropAspectRatio, .square)
+        XCTAssertEqual(model.settings.crop, lockedCrop)
+
+        model.resetCrop()
+        XCTAssertEqual(model.settings.crop, PixelRect(x: 20, width: 120, height: 120))
+        model.setCropAspectRatio(.free)
+        model.settings.crop = PixelRect(width: 80, height: 60)
+        model.settings.method = .accurate; model.settings.quality = .high
+        let firstSettings = model.settings
+        model.addLoop()
+        let second = try XCTUnwrap(model.loops.selectedID)
+        model.settings.cropEnabled = false; model.settings.quality = .smaller
+        let secondSettings = model.settings
+        let secondPosition = model.position
+        var inactiveEdit = firstSettings
+        inactiveEdit.quality = .balanced
+        inactiveEdit.start = 1.2
+        XCTAssertNil(model.updateLoop(id: first, settings: inactiveEdit))
+        XCTAssertEqual(model.loops.selectedID, second)
+        XCTAssertEqual(model.settings, secondSettings)
+        XCTAssertEqual(model.position, secondPosition)
+        XCTAssertEqual(model.loops.ranges.first { $0.id == first }?.settings, inactiveEdit)
+        try await waitUntil { model.queuePlans[first]?.settings == inactiveEdit && model.queuePlans[second]?.settings == secondSettings }
+        XCTAssertEqual(model.queuePlans[first]?.method, .encode)
+        XCTAssertEqual(model.queuePlans[first]?.fileExtension, "mp4")
+        XCTAssertEqual(model.loops.selectedID, second)
+        var invalidEdit = inactiveEdit; invalidEdit.end = 0
+        XCTAssertNotNil(model.updateLoop(id: first, settings: invalidEdit))
+        XCTAssertEqual(model.loops.ranges.first { $0.id == first }?.settings, inactiveEdit)
+        model.queueInputErrors[first] = ["Start": "Invalid draft"]
+        XCTAssertTrue(model.hasInputErrors)
+        XCTAssertFalse(model.hasErrors(for: second))
+        model.exportLoop(first)
+        XCTAssertFalse(model.isBusy)
+        model.queueInputErrors[first] = nil
+        XCTAssertNil(model.updateLoop(id: first, settings: firstSettings))
+        model.estimateLoop(first)
+        try await waitUntil({ !model.isBusy }, timeout: 40)
+        XCTAssertEqual(model.queueEstimates[first]?.count, 3)
+        XCTAssertEqual(model.loops.selectedID, second)
+        model.selectLoop(first)
+        XCTAssertEqual(model.queueEstimates[first]?.count, 3)
+        model.selectLoop(second)
+        model.addLoop()
+        let third = try XCTUnwrap(model.loops.selectedID)
+        XCTAssertFalse(model.canSelectNextLoop)
+        model.selectAdjacentLoop(1)
+        XCTAssertEqual(model.loops.selectedID, third)
+        model.selectAdjacentLoop(-1)
+        XCTAssertEqual(model.loops.selectedID, second)
+        XCTAssertEqual(model.settings, secondSettings)
+        XCTAssertEqual(model.position, secondSettings.start)
+        XCTAssertEqual(model.playbackMode, .repeatSelection)
+        XCTAssertFalse(model.isPlaying)
+        model.selectAdjacentLoop(-1)
+        XCTAssertEqual(model.loops.selectedID, first)
+        XCTAssertEqual(model.settings, firstSettings)
+        XCTAssertFalse(model.canSelectPreviousLoop)
+        model.selectAdjacentLoop(-1)
+        XCTAssertEqual(model.loops.selectedID, first)
+        model.togglePlayback()
+        try await waitUntil { model.isPlaying }
+        model.selectAdjacentLoop(1)
+        XCTAssertEqual(model.loops.selectedID, second)
+        try await waitUntil { model.isPlaying && model.position >= secondSettings.start && model.position < secondSettings.end }
+        model.stop()
+        model.selectAdjacentLoop(1)
+        XCTAssertEqual(model.loops.selectedID, third)
+        model.removeLoop()
+        model.selectLoop(first)
+        XCTAssertEqual(model.settings, firstSettings)
+        model.selectLoop(second)
+        XCTAssertEqual(model.settings, secondSettings)
+        model.exportQueue()
+        XCTAssertTrue(model.isBusy)
+        model.selectLoop(first)
+        XCTAssertEqual(model.loops.selectedID, second, "Queue edits freeze during export")
+        try await waitUntil({ !model.isBusy }, timeout: 40)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.results.count, 2)
+        XCTAssertEqual(model.results.map(\.settings), [firstSettings, secondSettings])
+        XCTAssertEqual(model.results.map(\.width), [80, 160])
+        XCTAssertEqual(model.results.map { $0.url.lastPathComponent }, ["Fixture - loop 01 - trim crop.mp4", "Fixture - loop 02 - trim.mp4"])
+        model.showReview = false
+        model.exportQueue()
+        model.cancel()
+        try await waitUntil { !model.isBusy && model.plan != nil }
+        XCTAssertEqual(model.results.count, 2)
+        XCTAssertTrue(model.status.contains("Cancelled"), model.status)
+        let contents = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertFalse(contents.contains { $0.hasPrefix(".croptrimmer-") })
+        let queueBeforeRename = model.loops
+        let settingsBeforeRename = model.settings
+        let identityBeforeRename = try XCTUnwrap(model.source).identity
+        XCTAssertTrue(model.renameSource(to: "Short"))
+        try await waitUntil { !model.isBusy && model.plan != nil }
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.source?.url.lastPathComponent, "Short.mp4")
+        XCTAssertEqual(model.source?.identity, identityBeforeRename)
+        XCTAssertEqual(model.loops, queueBeforeRename)
+        XCTAssertEqual(model.settings, settingsBeforeRename)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertTrue(model.results.allSatisfy { $0.sourceURL.lastPathComponent == "Short.mp4" })
+        XCTAssertTrue(model.results.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
+        let currentAsset = model.player.currentItem?.asset as? AVURLAsset
+        XCTAssertEqual(currentAsset?.url.lastPathComponent, "Short.mp4")
+        model.selectLoop(first)
+        model.exportLoop(second)
+        try await waitUntil({ !model.isBusy }, timeout: 40)
+        XCTAssertEqual(model.loops.selectedID, first)
+        XCTAssertEqual(model.results.last?.url.lastPathComponent, "Short - loop 02 - trim.mp4")
+        let exportedURL = try XCTUnwrap(model.results.last).url
+        model.showReview = false
+        model.open(exportedURL)
+        try await waitUntil { !model.isBusy && model.source != nil }
+        XCTAssertTrue(model.renameSource(to: "Reopened"))
+        try await waitUntil { !model.isBusy && model.source != nil }
+        XCTAssertEqual(model.results.last?.url.lastPathComponent, "Reopened.mp4")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(model.results.last).url.path))
+
+
+
+    }
+}
