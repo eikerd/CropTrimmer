@@ -3,7 +3,7 @@ import XCTest
 
 final class MediaEngineTests: XCTestCase {
     private var directory: URL!
-    private let ffmpeg = "/opt/homebrew/bin/ffmpeg"
+    private let ffmpeg = TestTools.ffmpeg
     override func setUpWithError() throws {
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg), "Integration fixtures require FFmpeg")
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-engine-test-" + UUID().uuidString)

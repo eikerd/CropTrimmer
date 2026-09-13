@@ -15,7 +15,7 @@ final class EditorIntegrationTests: XCTestCase {
     @MainActor
     func testTransportAndIndependentQueueExports() async throws {
         _ = NSApplication.shared
-        let ffmpeg = "/opt/homebrew/bin/ffmpeg"
+        let ffmpeg = TestTools.ffmpeg
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-editor-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

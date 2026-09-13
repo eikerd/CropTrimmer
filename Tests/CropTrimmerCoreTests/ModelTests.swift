@@ -4,7 +4,7 @@ import AVFoundation
 
 final class ModelTests: XCTestCase {
     func testNativePlaybackCanNormalizeNonzeroVideoOrigin() async throws {
-        let executable = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+        let executable = URL(fileURLWithPath: TestTools.ffmpeg)
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: executable.path))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
         defer { try? FileManager.default.removeItem(at: url) }
