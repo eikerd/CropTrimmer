@@ -359,7 +359,9 @@ public actor MediaEngine {
             let size = (try? SourceIdentity(url: stdout).size) ?? 0
             let errorSize = (try? SourceIdentity(url: stderr).size) ?? 0
             if size > outputLimit || errorSize > 2_000_000 { exceeded = true }
-            if let duration, duration > 0, size < outputLimit, let data = try? Data(contentsOf: stdout) {
+            // Progress lines are appended, so only the tail is read; a full re-read every poll
+            // would grow quadratically over a long export.
+            if let duration, duration > 0, size < outputLimit, let data = try? tail(of: stdout, size: size, bytes: 4_096) {
                 let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
                 if let line = lines.last(where: { $0.hasPrefix("out_time_us=") }), let micros = Double(line.dropFirst(12)) {
                     progress(min(0.92, max(0, micros / 1_000_000 / duration) * 0.92), "Processing movie")
@@ -384,6 +386,12 @@ public actor MediaEngine {
     }
 }
 
+private func tail(of url: URL, size: Int64, bytes: Int64) throws -> Data {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    try handle.seek(toOffset: UInt64(max(0, size - bytes)))
+    return try handle.readToEnd() ?? Data()
+}
 private func number(_ value: Any?) -> Double? {
     if let value = value as? NSNumber { return value.doubleValue }
     if let value = value as? String { return Double(value) }
