@@ -160,6 +160,8 @@ struct EditorView: View {
                     sourceSection
                     Divider()
                     queueSection
+                    Divider()
+                    looksSection
                 }.font(.system(size: 12)).padding(16)
             }.disabled(model.source == nil || model.isBusy)
             Divider()
@@ -238,6 +240,25 @@ struct EditorView: View {
             }
             ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
                 QueueLoopCard(model: model, loop: loop, number: index + 1)
+            }
+        }
+    }
+
+    private var looksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("SAVED LOOKS", "paintpalette")
+            Button("Save selected color correction") { model.saveCurrentLook() }
+                .disabled(model.source == nil || model.settings.color.isIdentity)
+                .accessibilityLabel("Save selected color correction as a look")
+            ForEach(model.savedLooks) { look in
+                HStack(spacing: 4) {
+                    Button(look.name) { model.applyLook(look) }
+                        .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Apply saved look \(look.name)")
+                    Button { model.deleteLook(look) } label: { Image(systemName: "trash") }
+                        .buttonStyle(.plain).help("Delete saved look \(look.name)")
+                        .accessibilityLabel("Delete saved look \(look.name)")
+                }
             }
         }
     }

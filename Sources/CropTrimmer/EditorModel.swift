@@ -36,8 +36,10 @@ final class EditorModel: ObservableObject {
     @Published var timeInputErrors: [String: String] = [:]
     @Published var timeInputRevision = UUID()
     @Published var thumbnails: [NSImage] = []
+    @Published private(set) var savedLooks: [SavedLook] = []
     let player = AVPlayer()
     let engine = MediaEngine()
+    let lookStore = SavedLookStore()
     private var openingTask: Task<Void, Never>?
     private var planningTask: Task<Void, Never>?
     private var thumbnailTask: Task<Void, Never>?
@@ -54,8 +56,10 @@ final class EditorModel: ObservableObject {
     private var playbackRevision: UInt64 = 0
     private var generation = UUID()
     private var jobID: UUID?
+    private var colorPreviewTask: Task<Void, Never>?
 
     init() {
+        reloadLooks()
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1.0 / 30, preferredTimescale: 60000), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self, time.seconds.isFinite else { return }
@@ -88,6 +92,37 @@ final class EditorModel: ObservableObject {
                 }
             }
             return handled ? nil : event
+        }
+    }
+
+    func reloadLooks() {
+        Task { @MainActor in
+            if let values = try? await lookStore.looks() { savedLooks = values }
+        }
+    }
+
+    func saveCurrentLook(named name: String? = nil) {
+        let fallback = "Look \(savedLooks.count + 1)"
+        let trimmed = (name ?? fallback).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let look = SavedLook(name: trimmed, color: settings.color)
+        Task { @MainActor in
+            do { try await lookStore.save(look); reloadLooks() }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func applyLook(_ look: SavedLook, to loopID: UUID? = nil) {
+        let id = loopID ?? loops.selectedID
+        guard let id, let current = loops.ranges.first(where: { $0.id == id })?.settings else { return }
+        var next = current; next.color = look.color
+        _ = updateLoop(id: id, settings: next)
+    }
+
+    func deleteLook(_ look: SavedLook) {
+        Task { @MainActor in
+            do { try await lookStore.delete(id: look.id); reloadLooks() }
+            catch { errorMessage = error.localizedDescription }
         }
     }
 
@@ -157,6 +192,7 @@ final class EditorModel: ObservableObject {
                 settings = loops.selected?.settings ?? EditSettings(source: inspected)
                 isResetting = false
                 player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
+                refreshColorPreview(for: requestedGeneration)
                 seek(snapshot?.position ?? 0)
                 player.volume = Float(volume); player.isMuted = muted
                 isBusy = false; status = "Ready · \(inspected.width) × \(inspected.height) · \(timeLabel(inspected.duration))"
@@ -185,7 +221,29 @@ final class EditorModel: ObservableObject {
         }
         if !settings.cropEnabled { cropAdjusting = false; timeInputErrors = timeInputErrors.filter { !$0.key.hasPrefix("Crop ") } }
         updateBoundaryObserver()
+        refreshColorPreview(for: generation)
         schedulePlan()
+    }
+
+    private func refreshColorPreview(for expectedGeneration: UUID) {
+        colorPreviewTask?.cancel()
+        guard let item = player.currentItem else { return }
+        let asset = item.asset
+        let correction = settings.color
+        let currentTime = player.currentTime()
+        guard !correction.isIdentity else {
+            item.videoComposition = nil
+            return
+        }
+        colorPreviewTask = Task { @MainActor [weak self] in
+            do {
+                let lut = try await Task.detached(priority: .userInitiated) { try ColorLUT.compile(settings: correction) }.value
+                try Task.checkCancellation()
+                guard let self, self.generation == expectedGeneration, self.player.currentItem === item else { return }
+                item.videoComposition = ColorPlaybackRenderer.videoComposition(asset: asset, lut: lut)
+                await self.player.seek(to: currentTime, toleranceBefore: .zero, toleranceAfter: .zero)
+            } catch { }
+        }
     }
 
     private func schedulePlan(preserveStatus: Bool = false) {

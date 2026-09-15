@@ -19,6 +19,7 @@ struct QueueLoopCard: View {
         VStack(alignment: .leading, spacing: 8) {
             timeRow
             cropRow
+            ColorControlsView(model: model, loopID: loop.id, number: number)
             if edit.cropEnabled {
                 cropControls
                 exportOptions
@@ -139,7 +140,7 @@ struct QueueLoopCard: View {
                 Picker("Quality", selection: setting(\.quality)) {
                     ForEach(Quality.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.labelsHidden().accessibilityLabel("Loop \(number) encoding quality")
-                    .disabled(!edit.cropEnabled && edit.method == .fast)
+                    .disabled(!edit.cropEnabled && edit.color.isIdentity && edit.method == .fast)
             }
 
         }
