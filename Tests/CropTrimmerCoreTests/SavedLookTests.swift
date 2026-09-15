@@ -8,12 +8,17 @@ final class SavedLookTests: XCTestCase {
         let look = SavedLook(name: "Warm interview", color: ColorSettings(enabled: true, gamma: 1.2, saturation: 0.9))
         try await store.save(look)
         let loaded = try await store.looks()
-        XCTAssertEqual(loaded, [look])
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.id, look.id)
+        XCTAssertEqual(loaded.first?.name, look.name)
+        XCTAssertEqual(loaded.first?.color, look.color)
         var applied = try XCTUnwrap(loaded.first)
         applied.name = "Changed locally"
-        XCTAssertNotEqual(try await store.look(id: look.id)?.name, applied.name)
+        let storedName = try await store.look(id: look.id)?.name
+        XCTAssertNotEqual(storedName, applied.name)
         try await store.delete(id: look.id)
-        XCTAssertTrue(try await store.looks().isEmpty)
+        let remaining = try await store.looks()
+        XCTAssertTrue(remaining.isEmpty)
         try? FileManager.default.removeItem(at: directory)
     }
 
