@@ -5,7 +5,7 @@ model: GPT-6 (Astra)
 repo: eikerd/CropTrimmer
 branch: codex/color-provider-ui
 pr: https://github.com/eikerd/CropTrimmer/pull/6
-state: pr-open
+state: merged
 deployed: no
 loose_ends: none
 supersedes: 2026-09-14-2148-codex-color-correction-implementation.md
