@@ -6,6 +6,9 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class EditorModel: ObservableObject {
+    @Published var filenameModel = UserDefaults.standard.string(forKey: "CropTrimmer.filenameModel") ?? "google/gemini-2.5-flash-lite" {
+        didSet { UserDefaults.standard.set(filenameModel, forKey: "CropTrimmer.filenameModel") }
+    }
     @Published var source: MediaSource?
     @Published var settings = EditSettings() { didSet { settingsChanged(from: oldValue) } }
     @Published private(set) var loops = MovieLoops()
@@ -238,6 +241,10 @@ final class EditorModel: ObservableObject {
               let source, let loop = loops.selected,
               let endpoint = URL(string: colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
         let configuredModel = colorProviderModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if endpoint.host?.lowercased() == "openrouter.ai", configuredModel.isEmpty {
+            errorMessage = "Choose an OpenRouter model in Crop Trimmer Settings."
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
@@ -263,9 +270,10 @@ final class EditorModel: ObservableObject {
                         }
                         let environment = ProcessInfo.processInfo.environment
                         let isOpenRouter = endpoint.host?.lowercased() == "openrouter.ai"
-                        let apiKey = Self.colorProviderAPIKey(environment: environment, isOpenRouter: isOpenRouter)
+                        let savedKey = isOpenRouter ? try OpenRouterKeyStore.read() : nil
+                        let apiKey = savedKey ?? Self.colorProviderAPIKey(environment: environment, isOpenRouter: isOpenRouter)
                         guard !isOpenRouter || apiKey != nil else {
-                            throw MediaError.invalid("Set OPENROUTER_API_KEY before asking OpenRouter for a color suggestion.")
+                            throw MediaError.invalid("Add your OpenRouter API key in Crop Trimmer Settings.")
                         }
                         let configuration = try OpenAICompatibleColorSuggestionProvider.Configuration(endpoint: endpoint, model: configuredModel, apiKey: apiKey)
                         return try await OpenAICompatibleColorSuggestionProvider(configuration: configuration).suggest(request)
@@ -319,6 +327,23 @@ final class EditorModel: ObservableObject {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    func suggestFilename() async throws -> String {
+        guard let source, !isBusy, !showReview else { throw MediaError.invalid("Open a movie before suggesting a name.") }
+        let sourceID = source.id
+        let time = min(position, max(0, source.duration - 0.1))
+        let namingModel = filenameModel
+        let key = try OpenRouterKeyStore.read()
+            ?? Self.colorProviderAPIKey(environment: ProcessInfo.processInfo.environment, isOpenRouter: true)
+        guard let key else { throw MediaError.invalid("Add your OpenRouter API key in Settings.") }
+        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time, maximumSide: 512)
+        try Task.checkCancellation()
+        guard self.source?.id == sourceID else { throw CancellationError() }
+        let name = try await FilenameVisionProvider().suggest(framePNG: frame, model: namingModel, apiKey: key)
+        try Task.checkCancellation()
+        guard self.source?.id == sourceID else { throw CancellationError() }
+        return name
     }
 
     private func loadMovie(_ url: URL, preserving snapshot: (loops: MovieLoops, position: Double, identity: SourceIdentity)? = nil) {

@@ -31,12 +31,18 @@ enum AutomaticColorSuggestion {
     /// Encodes the upright representative frame for a reference-conditioned
     /// provider. The image is transient request data and is never added to the
     /// media library.
-    static func framePNGData(url: URL, time: Double) async throws -> Data {
+    static func framePNGData(url: URL, time: Double, maximumSide: CGFloat? = nil) async throws -> Data {
         guard url.isFileURL, time.isFinite, time >= 0 else {
             throw MediaError.invalid("Choose a valid movie frame for color correction.")
         }
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
+        if let maximumSide {
+            guard maximumSide.isFinite, maximumSide > 0, maximumSide <= 4096 else {
+                throw MediaError.invalid("Choose a valid frame size.")
+            }
+            generator.maximumSize = CGSize(width: maximumSide, height: maximumSide)
+        }
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero

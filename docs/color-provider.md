@@ -21,17 +21,25 @@ compiler remains the source of truth.
 ## OpenRouter
 
 In the inspector, open **Color → Reference**, choose **Another image · AI
-model**, and use the gear to enter the endpoint and model name. Then choose a
+model**, and use the gear to open Settings and choose a model from the dropdown. Then choose a
 reference image. A blank endpoint opens settings. A blank model name selects
 the custom LUT-service protocol; a nonblank name selects the OpenAI-compatible
 adapter. Auto correction and saved looks have their own tabs.
 
-For OpenRouter, the launch environment must contain `OPENROUTER_API_KEY` or
-`CROPTRIMMER_COLOR_PROVIDER_API_KEY` (the latter takes precedence). The
-OpenRouter-specific variable is only used for `openrouter.ai`. The app does
-not retrieve the key from 1Password itself; launch it with the secret already
-provided by your 1Password environment setup. Only endpoint and model name
-are saved in preferences.
+Open **Crop Trimmer → Settings…** (Command-comma) and paste the OpenRouter key
+into the masked field, then click **Save key**. It is saved in the local macOS
+Keychain, never in preferences. Paste a replacement and save again to rotate it.
+Blank input cannot overwrite a saved key. Saving a key fills the OpenRouter
+endpoint when no endpoint has been configured; choose a vision model too.
+The dropdown offers Gemini 2.5 Flash Lite, GPT-4.1 Mini, and Claude Haiku 4.5.
+Custom provider endpoints remain available in the disclosure below the picker.
+
+The stored key takes precedence for `openrouter.ai` only. If no stored key
+exists, the app falls back to `CROPTRIMMER_COLOR_PROVIDER_API_KEY`, then
+`OPENROUTER_API_KEY` for OpenRouter. Other endpoints can use the general
+environment key but never receive the stored OpenRouter key. Only endpoint
+and model name are saved in preferences. No key is fetched from 1Password
+automatically; it can be pasted from the user's existing 1Password record.
 
 OpenRouter exposes an OpenAI-compatible endpoint at:
 
@@ -40,8 +48,8 @@ https://openrouter.ai/api/v1/chat/completions
 ```
 
 Use a vision-capable model, pass its name as the adapter configuration's
-`model`, and provide the bearer token from an environment variable or 1Password
-rendered launch environment. Do not save the token in UserDefaults, a look, or
+`model`, and save the bearer token through Settings or provide it from the
+launch environment. Do not save the token in UserDefaults, a look, or
 the repository. OpenRouter's image input format is the same `messages[].content`
 array used by this adapter.
 

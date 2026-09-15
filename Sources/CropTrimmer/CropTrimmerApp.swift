@@ -54,6 +54,9 @@ struct CropTrimmerApp: App {
                 }
             }
         }
+        Settings {
+            ColorSettingsView(model: model)
+        }
     }
 }
 
