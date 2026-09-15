@@ -72,20 +72,20 @@ public actor MediaEngine {
 
     public func plan(source: MediaSource, settings: EditSettings) async throws -> ExportPlan {
         try settings.validate(source: source)
-        let colorLUT = settings.color.isIdentity ? nil : try ColorLUT.compile(settings: settings.color)
+        let hasColor = !settings.color.isIdentity
         try unchanged(source)
-        if settings.cropEnabled || settings.method == .accurate || colorLUT != nil {
-            let reason = colorLUT != nil ? "Color correction requires re-encoding." : (settings.cropEnabled ? "Cropping requires re-encoding." : "Accurate trim uses source presentation timing.")
-            return try encodedPlan(source, settings, reason: reason, colorLUT: colorLUT)
+        if settings.cropEnabled || settings.method == .accurate || hasColor {
+            let reason = hasColor ? "Color correction requires re-encoding." : (settings.cropEnabled ? "Cropping requires re-encoding." : "Accurate trim uses source presentation timing.")
+            return try encodedPlan(source, settings, reason: reason)
         }
         do {
             let candidate = try await copyPlan(source, settings)
             if settings.method == .fast || (abs(candidate.startShift) <= 0.25 && abs(candidate.endShift) <= 0.25) { return candidate }
-            return try encodedPlan(source, settings, reason: "Nearby keyframes cannot meet the 0.25-second tolerance at both boundaries.", colorLUT: colorLUT)
+            return try encodedPlan(source, settings, reason: "Nearby keyframes cannot meet the 0.25-second tolerance at both boundaries.")
         } catch {
             if Task.isCancelled || isCancellation(error) { throw MediaError.cancelled }
             if settings.method == .fast { throw error }
-            return try encodedPlan(source, settings, reason: "A verifiable fast trim is unavailable. " + error.localizedDescription, colorLUT: colorLUT)
+            return try encodedPlan(source, settings, reason: "A verifiable fast trim is unavailable. " + error.localizedDescription)
         }
     }
 
@@ -103,7 +103,7 @@ public actor MediaEngine {
             let output = directory.appendingPathComponent(quality.rawValue + ".mp4")
             var settings = plan.settings
             settings.start = start; settings.end = start + length; settings.quality = quality
-            let sample = try encodedPlan(plan.source, settings, reason: "Estimate sample", colorLUT: plan.colorLUT)
+            let sample = try encodedPlan(plan.source, settings, reason: "Estimate sample")
             let lutFile = try writeLUTIfNeeded(for: sample, output: output)
             defer { if let lutFile { try? FileManager.default.removeItem(at: lutFile) } }
             _ = try await run("ffmpeg", arguments: encodeArguments(sample, output: output, lutFile: lutFile), duration: length) { fraction, _ in
@@ -146,7 +146,7 @@ public actor MediaEngine {
                 guard plan.settings.method == .automatic else { throw error }
                 try? FileManager.default.removeItem(at: temporaryURL)
                 fallback = "Fast trim could not be verified; accurately re-encoded instead. "
-                active = try encodedPlan(plan.source, plan.settings, reason: fallback, colorLUT: plan.colorLUT)
+                active = try encodedPlan(plan.source, plan.settings, reason: fallback)
                 progress(0, "Fast trim verification failed; re-encoding")
             }
         }
@@ -173,14 +173,14 @@ public actor MediaEngine {
         return result
     }
 
-    private func encodedPlan(_ source: MediaSource, _ settings: EditSettings, reason: String, colorLUT: ColorLUT? = nil) throws -> ExportPlan {
+    private func encodedPlan(_ source: MediaSource, _ settings: EditSettings, reason: String) throws -> ExportPlan {
         if let restriction = source.encodingRestriction {
             let oddOnly = restriction == "Encoding is not supported for odd full-frame dimensions (choose an even crop)."
             if !oddOnly || !settings.cropEnabled { throw MediaError.unavailable(restriction) }
         }
-        return ExportPlan(source: source, settings: settings, method: .encode, plannedStart: settings.start, plannedEnd: settings.end,
+        return try ExportPlan(source: source, settings: settings, method: .encode, plannedStart: settings.start, plannedEnd: settings.end,
                           explanation: reason + " " + (source.audioCount > 1 ? "Only the first audio track is retained. " : "") +
-                          (source.subtitleCount > 0 ? "Subtitles are omitted. " : "") + "Chapters and extra video tracks are omitted.", colorLUT: colorLUT)
+                          (source.subtitleCount > 0 ? "Subtitles are omitted. " : "") + "Chapters and extra video tracks are omitted.")
     }
 
     private func copyPlan(_ source: MediaSource, _ settings: EditSettings) async throws -> ExportPlan {
@@ -206,7 +206,7 @@ public actor MediaEngine {
         let decodeCut = ending.first(where: { $0.key && abs($0.pts - cut) < 0.000001 })?.dts ?? cut
         let end = ending.filter { $0.dts < decodeCut - 0.000001 }.map { $0.pts + $0.duration }.max() ?? cut
         guard end > start else { throw MediaError.unavailable("No independently usable copy range was found.") }
-        return ExportPlan(source: source, settings: settings, method: .copy, plannedStart: max(0, start), plannedEnd: min(source.duration, end),
+        return try ExportPlan(source: source, settings: settings, method: .copy, plannedStart: max(0, start), plannedEnd: min(source.duration, end),
                           explanation: "Source quality unchanged. Planned boundaries include frame reordering; both ends are verified before saving. All audio tracks are retained. Subtitles, chapters and extra video tracks are omitted.", copyCutEnd: decodeCut)
     }
 

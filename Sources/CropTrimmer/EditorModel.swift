@@ -284,8 +284,8 @@ final class EditorModel: ObservableObject {
                 settings = loops.selected?.settings ?? EditSettings(source: inspected)
                 isResetting = false
                 player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
-                refreshColorPreview(for: requestedGeneration)
                 seek(snapshot?.position ?? 0)
+                refreshColorPreview(for: requestedGeneration)
                 player.volume = Float(volume); player.isMuted = muted
                 isBusy = false; status = "Ready · \(inspected.width) × \(inspected.height) · \(timeLabel(inspected.duration))"
                 updateBoundaryObserver(); schedulePlan(); loadThumbnails(asset: asset, source: inspected)
@@ -322,7 +322,8 @@ final class EditorModel: ObservableObject {
         guard let item = player.currentItem else { return }
         let asset = item.asset
         let correction = settings.color
-        let currentTime = player.currentTime()
+        let capturedPosition = position
+        let capturedRevision = playbackRevision
         guard !correction.isIdentity else {
             item.videoComposition = nil
             return
@@ -333,7 +334,8 @@ final class EditorModel: ObservableObject {
                 try Task.checkCancellation()
                 guard let self, self.generation == expectedGeneration, self.player.currentItem === item else { return }
                 item.videoComposition = ColorPlaybackRenderer.videoComposition(asset: asset, lut: lut)
-                await self.player.seek(to: currentTime, toleranceBefore: .zero, toleranceAfter: .zero)
+                guard self.player.timeControlStatus != .playing, self.playbackRevision == capturedRevision else { return }
+                await self.player.seek(to: CMTime(seconds: capturedPosition + self.playbackOrigin, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
             } catch { }
         }
     }
@@ -375,6 +377,7 @@ final class EditorModel: ObservableObject {
     func seek(_ seconds: Double) {
         guard let source else { return }
         let seconds = max(0, min(source.duration, seconds))
+        playbackRevision &+= 1
         position = seconds
         player.seek(to: CMTime(seconds: seconds + playbackOrigin, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
     }

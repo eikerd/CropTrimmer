@@ -5,7 +5,7 @@ model: GPT-6 (Astra)
 repo: eikerd/CropTrimmer
 branch: codex/color-correction-core
 pr: https://github.com/eikerd/CropTrimmer/pull/4
-state: merged
+state: pr-open
 deployed: no
 loose_ends: none
 supersedes: 2026-09-14-2006-codex-color-correction.md
@@ -52,10 +52,20 @@ so a later color-space gate can distinguish known SDR metadata from ambiguity.
   is a non-blocking style signal. Copilot and Greptile were unavailable because
   of account limits. ECC security and taxonomy gates passed.
 
+Review follow-up also validates color settings at the edit boundary, constrains
+the two level sliders so they cannot cross, preserves a paused seek during
+asynchronous preview compilation, rejects non-sRGB LUTs, keeps identity
+regularization channel-correct, bounds streamed provider responses and requires
+HTTPS outside loopback, derives the export LUT from the settings snapshot,
+preserves valid looks when another preset is corrupt, and warns when color-only
+encoding drops extra audio tracks.
+
+The final validation run passed **49 tests, 0 failures** after these fixes.
+
 ## Next agent: start here
 
 1. Read `docs/plans/color-correction.md` and this note. The implementation is
-   merged in PR #4; nothing is deployed by this task.
+   ready in PR #4; nothing is deployed by this task.
 2. The next work is the C00 parity gate: measure Core Image playback versus
    FFmpeg export in an explicit working color space, including tagged and
    ambiguous metadata, orientation, interpolation, and decoded output.

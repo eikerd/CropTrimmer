@@ -45,7 +45,14 @@ public actor LocalColorSuggestionProvider: ColorSuggestionProvider {
 public actor HTTPColorSuggestionProvider: ColorSuggestionProvider {
     private let endpoint: URL
     private let session: URLSession
-    public init(endpoint: URL, session: URLSession = .shared) { self.endpoint = endpoint; self.session = session }
+    public init(endpoint: URL, session: URLSession = .shared) throws {
+        let scheme = endpoint.scheme?.lowercased() ?? ""
+        let host = endpoint.host?.lowercased() ?? ""
+        guard scheme == "https" || (scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(host)) else {
+            throw MediaError.invalid("Color provider endpoints must use HTTPS, except for localhost development services.")
+        }
+        self.endpoint = endpoint; self.session = session
+    }
 
     public func suggest(_ request: ColorSuggestionRequest) async throws -> ColorSuggestionResult {
         var urlRequest = URLRequest(url: endpoint)
@@ -54,8 +61,12 @@ public actor HTTPColorSuggestionProvider: ColorSuggestionProvider {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder().encode(request)
         do {
-            let (data, response) = try await session.data(for: urlRequest)
-            guard data.count <= 32 * 1024 * 1024 else { throw MediaError.failed("The color provider returned an oversized result.") }
+            let (bytes, response) = try await session.bytes(for: urlRequest)
+            var data = Data(); data.reserveCapacity(64 * 1024)
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > 32 * 1024 * 1024 { throw MediaError.failed("The color provider returned an oversized result.") }
+            }
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 throw MediaError.unavailable("The color provider did not accept the request.")
             }

@@ -106,4 +106,8 @@ final class ColorCorrectionTests: XCTestCase {
         let data = try JSONEncoder().encode(valid)
         XCTAssertEqual(try JSONDecoder().decode(ColorLUT.self, from: data), valid)
     }
+
+    func testLUTRejectsUnsupportedColorSpace() {
+        XCTAssertThrowsError(try ColorLUT(size: 2, values: Array(repeating: Float(0.5), count: 24), colorSpace: "Display P3"))
+    }
 }

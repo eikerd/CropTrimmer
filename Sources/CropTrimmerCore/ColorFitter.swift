@@ -35,7 +35,10 @@ public enum ColorLUTFitter {
                 for row in 0..<4 { normal[row][4] += x[row] * y }
             }
             // Pull the solution toward identity, which keeps sparse/noisy fits tame.
-            for axis in 0..<3 { normal[axis][axis] += identityWeight; normal[axis][4] += identityWeight }
+            for axis in 0..<3 {
+                normal[axis][axis] += identityWeight
+                if axis == channel { normal[axis][4] += identityWeight }
+            }
             normal[3][3] += identityWeight
             coefficients.append(try solve(normal))
         }

@@ -66,7 +66,7 @@ public struct ColorLUT: Codable, Equatable, Sendable {
               values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
             throw MediaError.invalid("The 3D color table has an invalid size or payload.")
         }
-        guard !colorSpace.isEmpty else { throw MediaError.invalid("The color table has no color space.") }
+        guard colorSpace.caseInsensitiveCompare("sRGB") == .orderedSame else { throw MediaError.invalid("Only sRGB color tables are supported.") }
         self.size = size; self.values = values; self.colorSpace = colorSpace
     }
 

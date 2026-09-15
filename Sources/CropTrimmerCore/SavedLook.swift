@@ -23,6 +23,7 @@ public actor SavedLookStore {
     private let directory: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var errors: [String] = []
 
     public init(directory: URL? = nil) {
         if let directory { self.directory = directory }
@@ -51,8 +52,14 @@ public actor SavedLookStore {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension.lowercased() == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        return try files.map(decode)
+        errors = []
+        return files.compactMap { url in
+            do { return try decode(url) }
+            catch { errors.append(error.localizedDescription); return nil }
+        }
     }
+
+    public func lastLoadErrors() -> [String] { errors }
 
     public func delete(id: UUID) throws {
         let url = directory.appendingPathComponent(id.uuidString + ".json")

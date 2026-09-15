@@ -61,10 +61,20 @@ final class MediaEngineTests: XCTestCase {
         let graded = try ffData(["-i", output.url.path, "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
         XCTAssertEqual(original.count, graded.count)
         var channelSpread = 0
+        var originalChannelSpread = 0
+        var originalMin = UInt8.max, originalMax = UInt8.min
+        var gradedMin = UInt8.max, gradedMax = UInt8.min
         for index in stride(from: 0, to: graded.count, by: 3) {
+            originalMin = min(originalMin, original[index]); originalMax = max(originalMax, original[index])
+            gradedMin = min(gradedMin, graded[index]); gradedMax = max(gradedMax, graded[index])
+            originalChannelSpread += abs(Int(original[index]) - Int(original[index + 1]))
+            originalChannelSpread += abs(Int(original[index + 1]) - Int(original[index + 2]))
             channelSpread += abs(Int(graded[index]) - Int(graded[index + 1]))
             channelSpread += abs(Int(graded[index + 1]) - Int(graded[index + 2]))
         }
+        XCTAssertGreaterThan(originalChannelSpread, 0, "The source fixture must remain chromatic enough to exercise saturation")
+        XCTAssertGreaterThan(Int(originalMax) - Int(originalMin), 8, "The source fixture must retain a spatial value range")
+        XCTAssertGreaterThan(Int(gradedMax) - Int(gradedMin), 8, "Saturation must not flatten the graded image to a uniform gray")
         XCTAssertLessThan(channelSpread, graded.count / 8, "Saturation zero should produce a near-monochrome export")
     }
 

@@ -92,14 +92,17 @@ public struct EditSettings: Codable, Equatable, Sendable {
             guard crop.width >= 2, crop.height >= 2, crop.x >= 0, crop.y >= 0, crop.width <= source.width, crop.height <= source.height, crop.x <= source.width - crop.width, crop.y <= source.height - crop.height,
                   crop.width % 2 == 0, crop.height % 2 == 0, crop.x % 2 == 0, crop.y % 2 == 0 else { throw MediaError.invalid("Crop coordinates and dimensions must be even and inside the source image.") }
         }
+        try color.validate()
     }
 }
 public struct ExportPlan: Sendable {
     public let source: MediaSource; public let settings: EditSettings; public let method: ResolvedMethod
     public let plannedStart: Double; public let plannedEnd: Double; public let copyCutEnd: Double?; public let fileExtension: String; public let explanation: String
     public let colorLUT: ColorLUT?
-    public init(source: MediaSource, settings: EditSettings, method: ResolvedMethod, plannedStart: Double, plannedEnd: Double, fileExtension: String = "mp4", explanation: String, copyCutEnd: Double? = nil, colorLUT: ColorLUT? = nil) {
-        self.source = source; self.settings = settings; self.method = method; self.plannedStart = plannedStart; self.plannedEnd = plannedEnd; self.copyCutEnd = copyCutEnd; self.fileExtension = fileExtension; self.explanation = explanation; self.colorLUT = colorLUT
+    public init(source: MediaSource, settings: EditSettings, method: ResolvedMethod, plannedStart: Double, plannedEnd: Double, fileExtension: String = "mp4", explanation: String, copyCutEnd: Double? = nil) throws {
+        if method == .copy && !settings.color.isIdentity { throw MediaError.invalid("A color correction cannot use fast-copy export.") }
+        self.source = source; self.settings = settings; self.method = method; self.plannedStart = plannedStart; self.plannedEnd = plannedEnd; self.copyCutEnd = copyCutEnd; self.fileExtension = fileExtension; self.explanation = explanation
+        self.colorLUT = settings.color.isIdentity ? nil : try ColorLUT.compile(settings: settings.color)
     }
     public var width: Int { settings.cropEnabled ? settings.crop.width : source.width }
     public var height: Int { settings.cropEnabled ? settings.crop.height : source.height }

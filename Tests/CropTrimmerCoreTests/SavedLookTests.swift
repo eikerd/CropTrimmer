@@ -28,7 +28,10 @@ final class SavedLookTests: XCTestCase {
         try await store.save(SavedLook(name: "Good", color: ColorSettings()))
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: directory.appendingPathComponent("broken.json"))
-        do { _ = try await store.looks(); XCTFail("Corrupt look should be reported") } catch MediaError.invalid { }
+        let loaded = try await store.looks()
+        XCTAssertEqual(loaded.map(\.name), ["Good"])
+        let errors = await store.lastLoadErrors()
+        XCTAssertEqual(errors.count, 1)
         try? FileManager.default.removeItem(at: directory)
     }
 }

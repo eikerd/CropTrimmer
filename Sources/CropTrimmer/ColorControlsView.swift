@@ -14,8 +14,8 @@ struct ColorControlsView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Toggle("Enable", isOn: binding(\.enabled)).toggleStyle(.checkbox)
                     .accessibilityLabel("Loop \(number) enable color correction")
-                colorSlider("Black point", key: \.blackPoint, range: 0...0.95)
-                colorSlider("White point", key: \.whitePoint, range: 0.05...1)
+                colorSlider("Black point", key: \.blackPoint, range: 0...max(0, min(0.95, Double(edit.color.whitePoint) - 1.0 / 255.0)))
+                colorSlider("White point", key: \.whitePoint, range: min(1, max(0.05, Double(edit.color.blackPoint) + 1.0 / 255.0))...1)
                 colorSlider("Gamma", key: \.gamma, range: 0.25...4)
                 colorSlider("Saturation", key: \.saturation, range: 0...2)
                 HStack {

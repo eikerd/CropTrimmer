@@ -157,7 +157,7 @@ struct QueueLoopCard: View {
                     if let restriction = source.encodingRestriction { Text(restriction).foregroundStyle(.orange) }
                 }.font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
             }.font(.system(size: 10))
-            if source.subtitleCount > 0 || (source.audioCount > 1 && (edit.cropEnabled || edit.method != .fast)) {
+            if source.subtitleCount > 0 || (source.audioCount > 1 && (edit.cropEnabled || !edit.color.isIdentity || edit.method != .fast)) {
                 Text("Some tracks may be omitted; see output details.")
                     .font(.caption2).foregroundStyle(.orange)
             }
