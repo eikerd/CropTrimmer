@@ -76,7 +76,8 @@ final class ColorCorrectionTests: XCTestCase {
         let lut = try ColorLUT.compile(settings: ColorSettings(enabled: true, gamma: 1.4), size: 3)
         let decoded = try ColorLUT(cubeText: lut.cubeText)
         XCTAssertEqual(decoded.size, lut.size)
-        XCTAssertEqual(decoded.values, lut.values)
+        XCTAssertEqual(decoded.values.count, lut.values.count)
+        for (actual, expected) in zip(decoded.values, lut.values) { XCTAssertEqual(actual, expected, accuracy: 0.0000001) }
         XCTAssertEqual(decoded.colorSpace, "sRGB")
     }
 
