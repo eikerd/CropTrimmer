@@ -45,6 +45,39 @@ final class MediaEngineTests: XCTestCase {
         XCTAssertTrue(sizes.values.allSatisfy { $0 > 0 })
     }
 
+    func testColorCorrectionForcesEncodingAndChangesPixels() async throws {
+        let engine = MediaEngine()
+        let source = try await engine.inspect(fixture())
+        var edit = EditSettings(source: source)
+        edit.method = .fast
+        edit.color = ColorSettings(enabled: true, gamma: 2, saturation: 0)
+        let plan = try await engine.plan(source: source, settings: edit)
+        XCTAssertEqual(plan.method, .encode)
+        XCTAssertNotNil(plan.colorLUT)
+        let output = try await engine.export(plan: plan, to: directory.appendingPathComponent("color.mp4")) { _, _ in }
+        XCTAssertEqual(output.method, .encode)
+        XCTAssertTrue(output.note.contains("Encoded"))
+        let original = try ffData(["-i", source.url.path, "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        let graded = try ffData(["-i", output.url.path, "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        XCTAssertEqual(original.count, graded.count)
+        var channelSpread = 0
+        var originalChannelSpread = 0
+        var originalMin = UInt8.max, originalMax = UInt8.min
+        var gradedMin = UInt8.max, gradedMax = UInt8.min
+        for index in stride(from: 0, to: graded.count, by: 3) {
+            originalMin = min(originalMin, original[index]); originalMax = max(originalMax, original[index])
+            gradedMin = min(gradedMin, graded[index]); gradedMax = max(gradedMax, graded[index])
+            originalChannelSpread += abs(Int(original[index]) - Int(original[index + 1]))
+            originalChannelSpread += abs(Int(original[index + 1]) - Int(original[index + 2]))
+            channelSpread += abs(Int(graded[index]) - Int(graded[index + 1]))
+            channelSpread += abs(Int(graded[index + 1]) - Int(graded[index + 2]))
+        }
+        XCTAssertGreaterThan(originalChannelSpread, 0, "The source fixture must remain chromatic enough to exercise saturation")
+        XCTAssertGreaterThan(Int(originalMax) - Int(originalMin), 8, "The source fixture must retain a spatial value range")
+        XCTAssertGreaterThan(Int(gradedMax) - Int(gradedMin), 8, "Saturation must not flatten the graded image to a uniform gray")
+        XCTAssertLessThan(channelSpread, graded.count / 8, "Saturation zero should produce a near-monochrome export")
+    }
+
     func testSparseKeyframesAndAmbiguousCopyFallback() async throws {
         let engine = MediaEngine()
         let source = try await engine.inspect(fixture(gop: 100))

@@ -27,6 +27,23 @@ public struct SourceIdentity: Codable, Equatable, Sendable {
         inode = (a[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
     }
 }
+
+/// Color tags reported by the decoder. Unknown values are retained so the UI
+/// and future providers can distinguish a real tag from an assumption.
+public struct SourceColorDescription: Codable, Equatable, Sendable {
+    public let pixelFormat: String
+    public let primaries: String
+    public let transfer: String
+    public let matrix: String
+    public let range: String
+    public init(pixelFormat: String = "unknown", primaries: String = "unknown", transfer: String = "unknown", matrix: String = "unknown", range: String = "unknown") {
+        self.pixelFormat = pixelFormat; self.primaries = primaries; self.transfer = transfer; self.matrix = matrix; self.range = range
+    }
+    public var isTaggedSDR709: Bool {
+        primaries == "bt709" && transfer == "bt709" && matrix == "bt709" && ["tv", "pc"].contains(range)
+    }
+    public var isAmbiguous: Bool { [primaries, transfer, matrix, range].contains("unknown") || [primaries, transfer, matrix, range].contains("unspecified") }
+}
 public struct MediaSource: Identifiable, Sendable {
     public let id: UUID; public let url: URL; public let identity: SourceIdentity
     public let duration: Double; public let width: Int; public let height: Int
@@ -34,8 +51,9 @@ public struct MediaSource: Identifiable, Sendable {
     public let fps: Double; public let videoCodec: String; public let audioCount: Int
     public let subtitleCount: Int; public let format: String; public let startTime: Double
     public let encodingRestriction: String?
-    public init(id: UUID = UUID(), url: URL, identity: SourceIdentity, duration: Double, width: Int, height: Int, encodedWidth: Int, encodedHeight: Int, rotation: Int, fps: Double, videoCodec: String, audioCount: Int, subtitleCount: Int, format: String, startTime: Double = 0, encodingRestriction: String? = nil) {
-        self.id = id; self.url = url; self.identity = identity; self.duration = duration; self.width = width; self.height = height; self.encodedWidth = encodedWidth; self.encodedHeight = encodedHeight; self.rotation = rotation; self.fps = fps; self.videoCodec = videoCodec; self.audioCount = audioCount; self.subtitleCount = subtitleCount; self.format = format; self.startTime = startTime; self.encodingRestriction = encodingRestriction
+    public let color: SourceColorDescription
+    public init(id: UUID = UUID(), url: URL, identity: SourceIdentity, duration: Double, width: Int, height: Int, encodedWidth: Int, encodedHeight: Int, rotation: Int, fps: Double, videoCodec: String, audioCount: Int, subtitleCount: Int, format: String, startTime: Double = 0, encodingRestriction: String? = nil, color: SourceColorDescription = SourceColorDescription()) {
+        self.id = id; self.url = url; self.identity = identity; self.duration = duration; self.width = width; self.height = height; self.encodedWidth = encodedWidth; self.encodedHeight = encodedHeight; self.rotation = rotation; self.fps = fps; self.videoCodec = videoCodec; self.audioCount = audioCount; self.subtitleCount = subtitleCount; self.format = format; self.startTime = startTime; self.encodingRestriction = encodingRestriction; self.color = color
     }
 }
 public struct EditSettings: Codable, Equatable, Sendable {
@@ -44,8 +62,29 @@ public struct EditSettings: Codable, Equatable, Sendable {
     public var lastLockedCropAspectRatio: CropAspectRatio? = nil
     public var cropEnabled = false; public var crop = PixelRect(width: 1920, height: 1080)
     public var method: ExportMethod = .automatic; public var quality: Quality = .balanced
+    public var color = ColorSettings()
     public init() {}
     public init(source: MediaSource) { end = source.duration; crop = PixelRect(width: source.width, height: source.height).constrained(toWidth: source.width, height: source.height) }
+    private enum CodingKeys: String, CodingKey { case start, end, cropAspectRatio, lastLockedCropAspectRatio, cropEnabled, crop, method, quality, color }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        start = try values.decode(Double.self, forKey: .start)
+        end = try values.decode(Double.self, forKey: .end)
+        cropAspectRatio = try values.decodeIfPresent(CropAspectRatio.self, forKey: .cropAspectRatio)
+        lastLockedCropAspectRatio = try values.decodeIfPresent(CropAspectRatio.self, forKey: .lastLockedCropAspectRatio)
+        cropEnabled = try values.decode(Bool.self, forKey: .cropEnabled)
+        crop = try values.decode(PixelRect.self, forKey: .crop)
+        method = try values.decode(ExportMethod.self, forKey: .method)
+        quality = try values.decode(Quality.self, forKey: .quality)
+        color = try values.decodeIfPresent(ColorSettings.self, forKey: .color) ?? ColorSettings()
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(start, forKey: .start); try values.encode(end, forKey: .end)
+        try values.encode(cropAspectRatio, forKey: .cropAspectRatio); try values.encode(lastLockedCropAspectRatio, forKey: .lastLockedCropAspectRatio)
+        try values.encode(cropEnabled, forKey: .cropEnabled); try values.encode(crop, forKey: .crop)
+        try values.encode(method, forKey: .method); try values.encode(quality, forKey: .quality); try values.encode(color, forKey: .color)
+    }
     public var duration: Double { max(0, end - start) }
     public func validate(source: MediaSource) throws {
         guard start.isFinite, end.isFinite, start >= 0, end <= source.duration + 0.001, end > start else { throw MediaError.invalid("Choose a start before the end, within the movie.") }
@@ -53,13 +92,17 @@ public struct EditSettings: Codable, Equatable, Sendable {
             guard crop.width >= 2, crop.height >= 2, crop.x >= 0, crop.y >= 0, crop.width <= source.width, crop.height <= source.height, crop.x <= source.width - crop.width, crop.y <= source.height - crop.height,
                   crop.width % 2 == 0, crop.height % 2 == 0, crop.x % 2 == 0, crop.y % 2 == 0 else { throw MediaError.invalid("Crop coordinates and dimensions must be even and inside the source image.") }
         }
+        try color.validate()
     }
 }
 public struct ExportPlan: Sendable {
     public let source: MediaSource; public let settings: EditSettings; public let method: ResolvedMethod
     public let plannedStart: Double; public let plannedEnd: Double; public let copyCutEnd: Double?; public let fileExtension: String; public let explanation: String
-    public init(source: MediaSource, settings: EditSettings, method: ResolvedMethod, plannedStart: Double, plannedEnd: Double, fileExtension: String = "mp4", explanation: String, copyCutEnd: Double? = nil) {
+    public let colorLUT: ColorLUT?
+    public init(source: MediaSource, settings: EditSettings, method: ResolvedMethod, plannedStart: Double, plannedEnd: Double, fileExtension: String = "mp4", explanation: String, copyCutEnd: Double? = nil) throws {
+        if method == .copy && !settings.color.isIdentity { throw MediaError.invalid("A color correction cannot use fast-copy export.") }
         self.source = source; self.settings = settings; self.method = method; self.plannedStart = plannedStart; self.plannedEnd = plannedEnd; self.copyCutEnd = copyCutEnd; self.fileExtension = fileExtension; self.explanation = explanation
+        self.colorLUT = settings.color.isIdentity ? nil : try ColorLUT.compile(settings: settings.color)
     }
     public var width: Int { settings.cropEnabled ? settings.crop.width : source.width }
     public var height: Int { settings.cropEnabled ? settings.crop.height : source.height }

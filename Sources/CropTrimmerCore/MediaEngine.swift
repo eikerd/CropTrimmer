@@ -46,6 +46,8 @@ public actor MediaEngine {
         if !["unknown", "progressive"].contains(field) { restrictions.append("interlaced video") }
         let transfer = video["color_transfer"] as? String ?? "unknown"
         let primaries = video["color_primaries"] as? String ?? "unknown"
+        let matrix = video["color_space"] as? String ?? "unknown"
+        let range = video["color_range"] as? String ?? "unknown"
         if ["smpte2084", "arib-std-b67"].contains(transfer) || ["bt2020", "smpte431", "smpte432"].contains(primaries) {
             restrictions.append("HDR or wide-color video")
         }
@@ -64,14 +66,17 @@ public actor MediaEngine {
                            audioCount: streams.filter { ($0["codec_type"] as? String) == "audio" }.count,
                            subtitleCount: streams.filter { ($0["codec_type"] as? String) == "subtitle" }.count,
                            format: format["format_name"] as? String ?? "unknown", startTime: start,
-                           encodingRestriction: restrictions.isEmpty ? nil : "Encoding is not supported for " + restrictions.joined(separator: ", ") + ".")
+                           encodingRestriction: restrictions.isEmpty ? nil : "Encoding is not supported for " + restrictions.joined(separator: ", ") + ".",
+                           color: SourceColorDescription(pixelFormat: pixel, primaries: primaries, transfer: transfer, matrix: matrix, range: range))
     }
 
     public func plan(source: MediaSource, settings: EditSettings) async throws -> ExportPlan {
         try settings.validate(source: source)
+        let hasColor = !settings.color.isIdentity
         try unchanged(source)
-        if settings.cropEnabled || settings.method == .accurate {
-            return try encodedPlan(source, settings, reason: settings.cropEnabled ? "Cropping requires re-encoding." : "Accurate trim uses source presentation timing.")
+        if settings.cropEnabled || settings.method == .accurate || hasColor {
+            let reason = hasColor ? "Color correction requires re-encoding." : (settings.cropEnabled ? "Cropping requires re-encoding." : "Accurate trim uses source presentation timing.")
+            return try encodedPlan(source, settings, reason: reason)
         }
         do {
             let candidate = try await copyPlan(source, settings)
@@ -99,7 +104,9 @@ public actor MediaEngine {
             var settings = plan.settings
             settings.start = start; settings.end = start + length; settings.quality = quality
             let sample = try encodedPlan(plan.source, settings, reason: "Estimate sample")
-            _ = try await run("ffmpeg", arguments: encodeArguments(sample, output: output), duration: length) { fraction, _ in
+            let lutFile = try writeLUTIfNeeded(for: sample, output: output)
+            defer { if let lutFile { try? FileManager.default.removeItem(at: lutFile) } }
+            _ = try await run("ffmpeg", arguments: encodeArguments(sample, output: output, lutFile: lutFile), duration: length) { fraction, _ in
                 progress((Double(index) + fraction) / 3, "Estimating " + quality.rawValue.lowercased())
             }
             let bytes = try SourceIdentity(url: output).size
@@ -143,7 +150,9 @@ public actor MediaEngine {
                 progress(0, "Fast trim verification failed; re-encoding")
             }
         }
-        _ = try await run("ffmpeg", arguments: encodeArguments(active, output: temporaryURL), duration: active.duration, progress: progress)
+        let lutFile = try writeLUTIfNeeded(for: active, output: temporaryURL)
+        defer { if let lutFile { try? FileManager.default.removeItem(at: lutFile) } }
+        _ = try await run("ffmpeg", arguments: encodeArguments(active, output: temporaryURL, lutFile: lutFile), duration: active.duration, progress: progress)
         progress(0.94, "Validating encoded movie")
         let output = try await inspect(temporaryURL)
         try await validateOutput(active, output: output)
@@ -169,7 +178,7 @@ public actor MediaEngine {
             let oddOnly = restriction == "Encoding is not supported for odd full-frame dimensions (choose an even crop)."
             if !oddOnly || !settings.cropEnabled { throw MediaError.unavailable(restriction) }
         }
-        return ExportPlan(source: source, settings: settings, method: .encode, plannedStart: settings.start, plannedEnd: settings.end,
+        return try ExportPlan(source: source, settings: settings, method: .encode, plannedStart: settings.start, plannedEnd: settings.end,
                           explanation: reason + " " + (source.audioCount > 1 ? "Only the first audio track is retained. " : "") +
                           (source.subtitleCount > 0 ? "Subtitles are omitted. " : "") + "Chapters and extra video tracks are omitted.")
     }
@@ -197,7 +206,7 @@ public actor MediaEngine {
         let decodeCut = ending.first(where: { $0.key && abs($0.pts - cut) < 0.000001 })?.dts ?? cut
         let end = ending.filter { $0.dts < decodeCut - 0.000001 }.map { $0.pts + $0.duration }.max() ?? cut
         guard end > start else { throw MediaError.unavailable("No independently usable copy range was found.") }
-        return ExportPlan(source: source, settings: settings, method: .copy, plannedStart: max(0, start), plannedEnd: min(source.duration, end),
+        return try ExportPlan(source: source, settings: settings, method: .copy, plannedStart: max(0, start), plannedEnd: min(source.duration, end),
                           explanation: "Source quality unchanged. Planned boundaries include frame reordering; both ends are verified before saving. All audio tracks are retained. Subtitles, chapters and extra video tracks are omitted.", copyCutEnd: decodeCut)
     }
 
@@ -212,17 +221,38 @@ public actor MediaEngine {
         }
     }
 
-    private func encodeArguments(_ plan: ExportPlan, output: URL) -> [String] {
+    private func encodeArguments(_ plan: ExportPlan, output: URL, lutFile: URL? = nil) -> [String] {
         var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", decimal(plan.settings.start), "-i", plan.source.url.path,
                     "-t", decimal(plan.settings.duration), "-map", "0:V:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1"]
+        var filters: [String] = []
+        if let lutFile {
+            filters.append("lut3d=file='\(filterEscaped(lutFile.path))':interp=trilinear")
+        }
         if plan.settings.cropEnabled {
             let c = plan.settings.crop
-            args += ["-vf", "crop=\(c.width):\(c.height):\(c.x):\(c.y)"]
+            filters.append("crop=\(c.width):\(c.height):\(c.x):\(c.y)")
         }
+        if !filters.isEmpty { args += ["-vf", filters.joined(separator: ",")] }
         args += ["-c:v", "libx264", "-preset", "medium", "-crf", String(plan.settings.quality.crf), "-pix_fmt", "yuv420p",
                  "-fps_mode", "passthrough", "-enc_time_base", "-1", "-c:a", "aac", "-b:a", "192k", "-metadata:s:v:0", "rotate=0",
                  "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4", output.path]
         return args
+    }
+
+    private func writeLUTIfNeeded(for plan: ExportPlan, output: URL) throws -> URL? {
+        guard let lut = plan.colorLUT else { return nil }
+        let url = output.deletingLastPathComponent().appendingPathComponent(".croptrimmer-color-\(UUID().uuidString).cube")
+        try lut.cubeText.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private func filterEscaped(_ path: String) -> String {
+        path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: ":", with: "\\:")
+            .replacingOccurrences(of: ",", with: "\\,")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
     }
 
     private func copyArguments(_ plan: ExportPlan, output: URL) -> [String] {

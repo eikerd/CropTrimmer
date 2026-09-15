@@ -25,6 +25,7 @@ final class EditorModel: ObservableObject {
     @Published var results: [ExportResult] = []
     @Published var showReview = false { didSet { if showReview { pause() } } }
     @Published var errorMessage: String?
+    @Published private(set) var isSuggestingColor = false
     @Published var queueInputErrors: [UUID: [String: String]] = [:]
     @Published var queuePlans: [UUID: ExportPlan] = [:]
     @Published var queuePlanErrors: [UUID: String] = [:]
@@ -36,12 +37,15 @@ final class EditorModel: ObservableObject {
     @Published var timeInputErrors: [String: String] = [:]
     @Published var timeInputRevision = UUID()
     @Published var thumbnails: [NSImage] = []
+    @Published private(set) var savedLooks: [SavedLook] = []
     let player = AVPlayer()
     let engine = MediaEngine()
+    let lookStore = SavedLookStore()
     private var openingTask: Task<Void, Never>?
     private var planningTask: Task<Void, Never>?
     private var thumbnailTask: Task<Void, Never>?
     private var jobTask: Task<Void, Never>?
+    private var colorSuggestionTask: Task<Void, Never>?
     private var timeObserver: Any?
     private var boundaryObserver: Any?
     private var endObserver: NSObjectProtocol?
@@ -54,8 +58,10 @@ final class EditorModel: ObservableObject {
     private var playbackRevision: UInt64 = 0
     private var generation = UUID()
     private var jobID: UUID?
+    private var colorPreviewTask: Task<Void, Never>?
 
     init() {
+        reloadLooks()
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1.0 / 30, preferredTimescale: 60000), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self, time.seconds.isFinite else { return }
@@ -88,6 +94,127 @@ final class EditorModel: ObservableObject {
                 }
             }
             return handled ? nil : event
+        }
+    }
+
+    func reloadLooks() {
+        Task { @MainActor in
+            if let values = try? await lookStore.looks() { savedLooks = values }
+        }
+    }
+
+    func saveCurrentLook(named name: String? = nil) {
+        let fallback = "Look \(savedLooks.count + 1)"
+        let trimmed = (name ?? fallback).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let look = SavedLook(name: trimmed, color: settings.color)
+        Task { @MainActor in
+            do { try await lookStore.save(look); reloadLooks() }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func applyLook(_ look: SavedLook, to loopID: UUID? = nil) {
+        let id = loopID ?? loops.selectedID
+        guard let id, let current = loops.ranges.first(where: { $0.id == id })?.settings else { return }
+        var next = current; next.color = look.color
+        _ = updateLoop(id: id, settings: next)
+    }
+
+    func deleteLook(_ look: SavedLook) {
+        Task { @MainActor in
+            do { try await lookStore.delete(id: look.id); reloadLooks() }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func importCube() {
+        guard !isBusy, !showReview else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.data]; panel.allowsMultipleSelection = false
+        panel.message = "Choose a supported 3D .cube color table."
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                do {
+                    let lut = try ColorLUT(cubeText: String(contentsOf: url, encoding: .utf8))
+                    var next = self?.settings ?? EditSettings()
+                    next.color = ColorSettings(enabled: true, baseLUT: lut)
+                    if let self, let id = self.loops.selectedID { _ = self.updateLoop(id: id, settings: next) }
+                } catch { self?.errorMessage = error.localizedDescription }
+            }
+        }
+    }
+
+    func suggestAutomaticColorCorrection() {
+        guard !isBusy, !showReview, !isSuggestingColor, let source,
+              let loop = loops.selected else { return }
+        let requestedGeneration = generation
+        let loopID = loop.id
+        let sampledTime = loop.start + loop.duration / 2
+        isSuggestingColor = true
+        status = "Analyzing a representative frame…"
+        colorSuggestionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
+            do {
+                let suggestion = try await Task.detached(priority: .userInitiated) {
+                    try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime)
+                }.value
+                try Task.checkCancellation()
+                guard self.generation == requestedGeneration,
+                      self.loops.selectedID == loopID,
+                      self.loops.ranges.first(where: { $0.id == loopID })?.settings == loop.settings else { return }
+                var next = loop.settings
+                next.color = ColorSettings(enabled: true, baseLUT: suggestion.fit.lut)
+                guard self.updateLoop(id: loopID, settings: next) == nil else { return }
+                let errorLabel = String(format: "%.3f", suggestion.fit.meanError)
+                self.status = "Automatic correction suggested · \(suggestion.sampleCount) samples · mean error \(errorLabel)"
+            } catch is CancellationError {
+                self.status = "Automatic correction cancelled"
+            } catch {
+                self.errorMessage = error.localizedDescription
+                self.status = "Automatic correction unavailable"
+            }
+        }
+    }
+
+    func importMatchingReference() {
+        guard !isBusy, !showReview, !isSuggestingColor, let source,
+              let loop = loops.selected else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a corrected image of the same frame and composition."
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            let requestedGeneration = self?.generation ?? UUID()
+            let loopID = loop.id
+            let sampledTime = loop.start + loop.duration / 2
+            self?.isSuggestingColor = true
+            self?.status = "Fitting the matching reference frame…"
+            self?.colorSuggestionTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
+                do {
+                    let suggestion = try await Task.detached(priority: .userInitiated) {
+                        try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime, referenceURL: url)
+                    }.value
+                    try Task.checkCancellation()
+                    guard self.generation == requestedGeneration,
+                          self.loops.selectedID == loopID,
+                          self.loops.ranges.first(where: { $0.id == loopID })?.settings == loop.settings else { return }
+                    var next = loop.settings
+                    next.color = ColorSettings(enabled: true, baseLUT: suggestion.fit.lut)
+                    guard self.updateLoop(id: loopID, settings: next) == nil else { return }
+                    let errorLabel = String(format: "%.3f", suggestion.fit.meanError)
+                    self.status = "Reference correction suggested · mean error \(errorLabel)"
+                } catch is CancellationError {
+                    self.status = "Reference correction cancelled"
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                    self.status = "Reference correction unavailable"
+                }
+            }
         }
     }
 
@@ -126,7 +253,7 @@ final class EditorModel: ObservableObject {
     private func loadMovie(_ url: URL, preserving snapshot: (loops: MovieLoops, position: Double, identity: SourceIdentity)? = nil) {
         guard !isBusy else { status = "Finish or cancel the current operation before opening another movie."; return }
         guard url.isFileURL else { errorMessage = "Drop a local movie file."; return }
-        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel()
+        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); colorSuggestionTask?.cancel()
         pause(); player.replaceCurrentItem(with: nil)
         generation = UUID(); let requestedGeneration = generation
         scopedURL?.stopAccessingSecurityScopedResource(); scopedURL = nil
@@ -158,6 +285,7 @@ final class EditorModel: ObservableObject {
                 isResetting = false
                 player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
                 seek(snapshot?.position ?? 0)
+                refreshColorPreview(for: requestedGeneration)
                 player.volume = Float(volume); player.isMuted = muted
                 isBusy = false; status = "Ready · \(inspected.width) × \(inspected.height) · \(timeLabel(inspected.duration))"
                 updateBoundaryObserver(); schedulePlan(); loadThumbnails(asset: asset, source: inspected)
@@ -185,7 +313,31 @@ final class EditorModel: ObservableObject {
         }
         if !settings.cropEnabled { cropAdjusting = false; timeInputErrors = timeInputErrors.filter { !$0.key.hasPrefix("Crop ") } }
         updateBoundaryObserver()
+        refreshColorPreview(for: generation)
         schedulePlan()
+    }
+
+    private func refreshColorPreview(for expectedGeneration: UUID) {
+        colorPreviewTask?.cancel()
+        guard let item = player.currentItem else { return }
+        let asset = item.asset
+        let correction = settings.color
+        let capturedPosition = position
+        let capturedRevision = playbackRevision
+        guard !correction.isIdentity else {
+            item.videoComposition = nil
+            return
+        }
+        colorPreviewTask = Task { @MainActor [weak self] in
+            do {
+                let lut = try await Task.detached(priority: .userInitiated) { try ColorLUT.compile(settings: correction) }.value
+                try Task.checkCancellation()
+                guard let self, self.generation == expectedGeneration, self.player.currentItem === item else { return }
+                item.videoComposition = ColorPlaybackRenderer.videoComposition(asset: asset, lut: lut)
+                guard self.player.timeControlStatus != .playing, self.playbackRevision == capturedRevision else { return }
+                await self.player.seek(to: CMTime(seconds: capturedPosition + self.playbackOrigin, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
+            } catch { }
+        }
     }
 
     private func schedulePlan(preserveStatus: Bool = false) {
@@ -225,6 +377,7 @@ final class EditorModel: ObservableObject {
     func seek(_ seconds: Double) {
         guard let source else { return }
         let seconds = max(0, min(source.duration, seconds))
+        playbackRevision &+= 1
         position = seconds
         player.seek(to: CMTime(seconds: seconds + playbackOrigin, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
     }
@@ -543,12 +696,12 @@ final class EditorModel: ObservableObject {
     }
     private func finishJob(_ id: UUID) { guard jobID == id else { return }; jobID = nil; isBusy = false; jobTask = nil }
     func cancel() {
-        status = "Cancelling…"; openingTask?.cancel(); jobTask?.cancel()
+        status = "Cancelling…"; openingTask?.cancel(); jobTask?.cancel(); colorSuggestionTask?.cancel()
         Task { await engine.cancel() }
     }
     func reveal(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
     func shutdown() {
-        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); jobTask?.cancel()
+        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); jobTask?.cancel(); colorSuggestionTask?.cancel()
         pause()
         if let timeObserver { player.removeTimeObserver(timeObserver); self.timeObserver = nil }
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver); self.boundaryObserver = nil }

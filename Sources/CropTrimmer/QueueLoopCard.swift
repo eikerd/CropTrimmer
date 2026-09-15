@@ -19,11 +19,12 @@ struct QueueLoopCard: View {
         VStack(alignment: .leading, spacing: 8) {
             timeRow
             cropRow
+            ColorControlsView(model: model, loopID: loop.id, number: number)
             if edit.cropEnabled {
                 cropControls
                 exportOptions
             } else {
-                Text("Trim only · \(edit.method.rawValue)")
+                Text(edit.color.isIdentity ? "Trim only · \(edit.method.rawValue)" : "Color correction · re-encode")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 DisclosureGroup("Advanced export options", isExpanded: $showAdvanced) {
                     exportOptions.padding(.top, 5)
@@ -139,7 +140,7 @@ struct QueueLoopCard: View {
                 Picker("Quality", selection: setting(\.quality)) {
                     ForEach(Quality.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.labelsHidden().accessibilityLabel("Loop \(number) encoding quality")
-                    .disabled(!edit.cropEnabled && edit.method == .fast)
+                    .disabled(!edit.cropEnabled && edit.color.isIdentity && edit.method == .fast)
             }
 
         }
@@ -150,13 +151,13 @@ struct QueueLoopCard: View {
             DisclosureGroup("Output details") {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Source: \(source.videoCodec), \(source.audioCount) audio track(s), \(source.subtitleCount) subtitle track(s).")
-                    Text("Fast trim copies video and all audio tracks. Re-encoding uses H.264 video and the first audio track as AAC.")
+                    Text(edit.color.isIdentity ? "Fast trim copies video and all audio tracks. Re-encoding uses H.264 video and the first audio track as AAC." : "Color correction requires re-encoding with H.264 video and the first audio track as AAC.")
                     Text("Subtitles, chapters and attachments are not retained. Automatic trim may re-encode when clean stream copying is unavailable.")
                     Text("Size estimates sample this loop; the final size can differ with motion and detail.")
                     if let restriction = source.encodingRestriction { Text(restriction).foregroundStyle(.orange) }
                 }.font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
             }.font(.system(size: 10))
-            if source.subtitleCount > 0 || (source.audioCount > 1 && (edit.cropEnabled || edit.method != .fast)) {
+            if source.subtitleCount > 0 || (source.audioCount > 1 && (edit.cropEnabled || !edit.color.isIdentity || edit.method != .fast)) {
                 Text("Some tracks may be omitted; see output details.")
                     .font(.caption2).foregroundStyle(.orange)
             }
