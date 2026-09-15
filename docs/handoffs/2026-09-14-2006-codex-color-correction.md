@@ -37,12 +37,14 @@ Nothing from this task. The packaged application has not been rebuilt or replace
 ## Loose ends
 
 - Documentation PR #3 is open; three completed review rounds and the scorecard are required before merge. Check actual reviewer results rather than counting silence as a clean round.
+- Review services at handoff: Copilot explicitly reported its quota exhausted; Greptile explicitly reported its trial ended. Neither performed a review. CodeRabbit accepted the request and was still processing; no completed substantive review had been returned. Do not count these as three rounds or create a scorecard claiming MERGED. Recheck the PR for results before requesting additional review.
+- ECC Tools posted security-evidence and taxonomy success comments, plus generic reference-corpus suggestions unrelated to this documentation task. Its comments also report missing permission to publish GitHub checks. These comments are not application tests or substantive review rounds; no service permissions were changed.
 - At the start of this task the checkout was clean, `main` matched `origin/main`, there were no open PRs, no stashes, and no additional worktrees. The only task branch created here is `codex/color-correction-handoff`, pushed with PR #3.
 - Source rendering parity, paused-player updates, LUT interpolation, missing-metadata policy, and actual target-PC model performance remain unmeasured. These are explicitly listed future work, not passed tests.
 
 ## Next agent: start here
 
-1. Read this note and `docs/plans/color-correction.md`. Run the session sweep and check PR #3 before editing; resolve or finish the documentation PR first under the one-active-PR rule.
+1. Read this note and `docs/plans/color-correction.md`. Run the session sweep and check PR #3 before editing; resolve or finish the documentation PR first under the one-active-PR rule. Read CodeRabbit's completed response if available; the other reviewers' availability failures are recorded above. No override of the three-round requirement was requested or granted.
 2. Use the existing project directory. Project instructions prohibit making another checkout/worktree without permission. Do not edit another agent's dirty checkout or branch.
 3. Begin **C00**, not the sliders and not a model server. Produce reproducible synthetic color fixtures and compare actual AVFoundation-rendered frames with the FFmpeg path before lossy encoding and after a production encode.
 4. Current FFmpeg 8.0.1 has `lut3d` and `colorspace`, but no `zscale`. `lut3d` defaults to tetrahedral interpolation. Prove the explicit conversion and interpolation path with the tools that will actually be packaged.
