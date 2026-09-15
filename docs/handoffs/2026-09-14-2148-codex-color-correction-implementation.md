@@ -5,7 +5,7 @@ model: GPT-6 (Astra)
 repo: eikerd/CropTrimmer
 branch: codex/color-correction-core
 pr: https://github.com/eikerd/CropTrimmer/pull/4
-state: pr-open
+state: merged
 deployed: no
 loose_ends: none
 supersedes: 2026-09-14-2006-codex-color-correction.md
@@ -65,7 +65,7 @@ The final validation run passed **49 tests, 0 failures** after these fixes.
 ## Next agent: start here
 
 1. Read `docs/plans/color-correction.md` and this note. The implementation is
-   ready in PR #4; nothing is deployed by this task.
+   merged in PR #4; nothing is deployed by this task.
 2. The next work is the C00 parity gate: measure Core Image playback versus
    FFmpeg export in an explicit working color space, including tagged and
    ambiguous metadata, orientation, interpolation, and decoded output.
