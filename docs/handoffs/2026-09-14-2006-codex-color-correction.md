@@ -25,7 +25,7 @@ No application behavior, tests, dependencies, credentials, or Slack configuratio
 - Plan: `docs/plans/color-correction.md`.
 - Discovery link: `README.md`, Planned color correction.
 - This handoff: `docs/handoffs/2026-09-14-2006-codex-color-correction.md`.
-- Working folder: `/Users/ernestoikerd/repos/macos/CropTrimmer`; no additional worktree was created.
+- Working folder: the repository root; no additional worktree was created.
 - Baseline reviewed: `dfb96c8ed04f25673214ad301b6a3f8add1a62eb`.
 - Verified earlier this session: `swift test`, 30 XCTest tests, zero failures, approximately 20 seconds. No rerun is needed for these documentation-only edits. The temporary baseline log was `/tmp/croptrimmer-color-plan-baseline.log`; it is not a portable test artifact.
 - Verified during handoff: working tree/sweep, open PR inventory, source-file references, documentation links, and whitespace checks.

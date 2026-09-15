@@ -46,7 +46,7 @@ Use one fixed correction for a shot or loop initially. Independent model decisio
 
 ## 3. Verified starting point
 
-- Repository: `/Users/ernestoikerd/repos/macos/CropTrimmer`.
+- Repository: the Crop Trimmer repository root.
 - Reviewed commit: `dfb96c8ed04f25673214ad301b6a3f8add1a62eb` on `main`.
 - Checkout was clean; no open PRs or additional worktrees were reported.
 - Baseline: **30 XCTest tests passed, zero failures**, approximately 20 seconds. This establishes the existing baseline, not color correctness.
