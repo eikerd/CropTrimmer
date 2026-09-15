@@ -45,3 +45,12 @@ gray movie now goes through `AVAssetImageGenerator.videoComposition`, comparing
 corrected brightness with the decoded original and checking neutral channels.
 Both renderer tests pass. This closes the automated attachment gap; no artificial
 filter-failure seam was added just to exercise the fallback.
+
+Final full-suite result: **57 tests passed, zero failures**. Three independent
+CodeRabbit rounds completed on `26a8405`, `a9aea39`, and `642fadb`. Round three's
+handoff-count finding was corrected. Its suggestion to skip when libx264 is
+unavailable was declined: the existing fixture environment requires FFmpeg with
+libx264, and a present but unsuitable binary should fail rather than silently
+remove composition coverage. The current environment generated and rendered
+the fixture successfully. Copilot quota and expired Greptile trial prevented
+their reviews; neither was counted as a completed review.

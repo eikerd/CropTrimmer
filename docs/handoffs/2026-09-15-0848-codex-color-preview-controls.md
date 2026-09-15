@@ -5,9 +5,9 @@ model: GPT-6 Astra
 repo: eikerd/CropTrimmer
 branch: codex/openai-compatible-color-provider-ui
 pr: https://github.com/eikerd/CropTrimmer/pull/9
-state: pr-open
+state: merged
 deployed: no
-loose_ends: PR review and merge pending; live provider verification pending
+loose_ends: live provider verification pending
 supersedes: docs/handoffs/2026-09-14-2220-codex-openai-color-provider.md
 ---
 
@@ -28,10 +28,13 @@ service protocol. API keys are read only from the process environment.
   approved inspector/model wiring; `83caf18` test and operator documentation.
 - Files: `ColorPlaybackRenderer.swift`, `EditorView.swift`, `EditorModel.swift`,
   `docs/color-provider.md`, `docs/testing/color-preview.tdd.md`.
-- Verified: 54 tests passed; packaged release built and signature verified;
+- Verified: final full suite passed 57 tests (earlier checkpoints: 54 and 56);
+  packaged release built and signature verified;
   grayscale preview, three tabs, and settings popover exercised in the app.
-- Three local Codex review passes are recorded in the test evidence. These are
-  not independent agent reviews. External results are recorded in the scorecard.
+- Three local Codex passes and three completed independent CodeRabbit rounds
+  are recorded in the evidence and scorecard. CodeRabbit caught the blank-key
+  fallback bug and requested composition-level testing, both addressed.
+  Copilot was quota-limited; Greptile's trial had ended.
 
 ## What is deployed
 
@@ -51,8 +54,9 @@ approved code. No release distribution was created.
 1. Read `docs/color-provider.md` for the current UI and launch environment.
 2. Verify a vision-capable provider on consented sample images, including a
    failure response; report quality and timing without exposing the key.
-3. Preserve the shared LUT path for preview and export. The new regression
-   test covers filter input; AVPlayer attachment still needs a UI smoke check.
+3. Preserve the shared LUT path for preview and export. Regression tests now
+   cover both filter input and rendering through AVAssetImageGenerator's video
+   composition. AVPlayer attachment is additionally covered by UI smoke checks.
 
 ## Decided by the owner
 
