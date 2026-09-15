@@ -5,7 +5,7 @@ model: gpt-6-astra
 repo: eikerd/CropTrimmer
 branch: codex/openai-compatible-color-provider
 pr: https://github.com/eikerd/CropTrimmer/pull/8
-state: pr-open
+state: merged
 deployed: no
 loose_ends: none
 supersedes: docs/handoffs/2026-09-15-0304-codex-color-provider-ui.md
@@ -24,12 +24,12 @@ parsing, size limits, fallback order, and secret handling.
 
 ## Where it is
 
-- Commits: `d883073` adapter and docs; `cec76e3` contract wording review
+- Commits: `d883073` adapter and docs; `cec76e3` contract wording review; `28ca7c3` handoff
 - Files that matter: `Sources/CropTrimmerCore/ColorSuggestion.swift`,
   `Tests/CropTrimmerCoreTests/ColorSuggestionTests.swift`,
   `docs/color-provider.md`, `README.md`
-- Verified by: `swift test` (53 tests, 0 failures), `swift build`, and
-  `git diff --check`
+- Verified by: three review rounds (correctness, security, integration),
+  `swift test` (53 tests, 0 failures), `swift build`, and `git diff --check`
 
 ## What is deployed
 
