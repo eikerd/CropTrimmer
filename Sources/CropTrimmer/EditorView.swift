@@ -250,6 +250,16 @@ struct EditorView: View {
             Button("Save selected color correction") { model.saveCurrentLook() }
                 .disabled(model.source == nil || model.settings.color.isIdentity)
                 .accessibilityLabel("Save selected color correction as a look")
+            Button("Import 3D LUT…") { model.importCube() }
+                .accessibilityLabel("Import a 3D color LUT")
+            Button(model.isSuggestingColor ? "Analyzing frame…" : "Suggest correction from frame") {
+                model.suggestAutomaticColorCorrection()
+            }
+            .disabled(model.source == nil || model.isBusy || model.isSuggestingColor)
+            .accessibilityLabel("Suggest an automatic color correction from the selected loop")
+            Button("Fit matching reference frame…") { model.importMatchingReference() }
+                .disabled(model.source == nil || model.isBusy || model.isSuggestingColor)
+                .accessibilityLabel("Fit a color correction from a matching reference frame")
             ForEach(model.savedLooks) { look in
                 HStack(spacing: 4) {
                     Button(look.name) { model.applyLook(look) }

@@ -24,7 +24,7 @@ struct QueueLoopCard: View {
                 cropControls
                 exportOptions
             } else {
-                Text("Trim only · \(edit.method.rawValue)")
+                Text(edit.color.isIdentity ? "Trim only · \(edit.method.rawValue)" : "Color correction · re-encode")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 DisclosureGroup("Advanced export options", isExpanded: $showAdvanced) {
                     exportOptions.padding(.top, 5)
@@ -151,7 +151,7 @@ struct QueueLoopCard: View {
             DisclosureGroup("Output details") {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Source: \(source.videoCodec), \(source.audioCount) audio track(s), \(source.subtitleCount) subtitle track(s).")
-                    Text("Fast trim copies video and all audio tracks. Re-encoding uses H.264 video and the first audio track as AAC.")
+                    Text(edit.color.isIdentity ? "Fast trim copies video and all audio tracks. Re-encoding uses H.264 video and the first audio track as AAC." : "Color correction requires re-encoding with H.264 video and the first audio track as AAC.")
                     Text("Subtitles, chapters and attachments are not retained. Automatic trim may re-encode when clean stream copying is unavailable.")
                     Text("Size estimates sample this loop; the final size can differ with motion and detail.")
                     if let restriction = source.encodingRestriction { Text(restriction).foregroundStyle(.orange) }

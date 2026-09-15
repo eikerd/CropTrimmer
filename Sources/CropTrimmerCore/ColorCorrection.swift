@@ -8,17 +8,19 @@ public struct ColorSettings: Codable, Equatable, Sendable {
     public var whitePoint: Float
     public var gamma: Float
     public var saturation: Float
+    public var baseLUT: ColorLUT?
 
-    public init(enabled: Bool = false, blackPoint: Float = 0, whitePoint: Float = 1, gamma: Float = 1, saturation: Float = 1) {
+    public init(enabled: Bool = false, blackPoint: Float = 0, whitePoint: Float = 1, gamma: Float = 1, saturation: Float = 1, baseLUT: ColorLUT? = nil) {
         self.enabled = enabled
         self.blackPoint = blackPoint
         self.whitePoint = whitePoint
         self.gamma = gamma
         self.saturation = saturation
+        self.baseLUT = baseLUT
     }
 
     public var isIdentity: Bool {
-        !enabled || (blackPoint == 0 && whitePoint == 1 && gamma == 1 && saturation == 1)
+        !enabled || ((baseLUT == nil || baseLUT?.isIdentity == true) && blackPoint == 0 && whitePoint == 1 && gamma == 1 && saturation == 1)
     }
 
     public func validate() throws {
@@ -35,11 +37,12 @@ public struct ColorSettings: Codable, Equatable, Sendable {
     /// as a display-style value: values above one lift midtones.
     public func apply(to rgb: SIMD3<Float>) -> SIMD3<Float> {
         guard !isIdentity else { return rgb }
+        let base = baseLUT?.sample(rgb) ?? rgb
         let span = max(1.0 / 255.0, whitePoint - blackPoint)
         let leveled = SIMD3<Float>(
-            powf(clamp((rgb.x - blackPoint) / span), 1 / gamma),
-            powf(clamp((rgb.y - blackPoint) / span), 1 / gamma),
-            powf(clamp((rgb.z - blackPoint) / span), 1 / gamma)
+            powf(clamp((base.x - blackPoint) / span), 1 / gamma),
+            powf(clamp((base.y - blackPoint) / span), 1 / gamma),
+            powf(clamp((base.z - blackPoint) / span), 1 / gamma)
         )
         let luma = 0.2126 * leveled.x + 0.7152 * leveled.y + 0.0722 * leveled.z
         let saturated = SIMD3<Float>(repeating: luma) + (leveled - SIMD3<Float>(repeating: luma)) * saturation
@@ -56,6 +59,8 @@ public struct ColorLUT: Codable, Equatable, Sendable {
     public let values: [Float]
     public let colorSpace: String
 
+    private enum CodingKeys: String, CodingKey { case size, values, colorSpace }
+
     public init(size: Int, values: [Float], colorSpace: String = "sRGB") throws {
         guard (2...65).contains(size), values.count == size * size * size * 3,
               values.allSatisfy({ $0.isFinite }) else {
@@ -63,6 +68,34 @@ public struct ColorLUT: Codable, Equatable, Sendable {
         }
         guard !colorSpace.isEmpty else { throw MediaError.invalid("The color table has no color space.") }
         self.size = size; self.values = values; self.colorSpace = colorSpace
+    }
+
+    public var isIdentity: Bool {
+        guard colorSpace.caseInsensitiveCompare("sRGB") == .orderedSame else { return false }
+        for b in 0..<size {
+            for g in 0..<size {
+                for r in 0..<size {
+                    let index = ((b * size + g) * size + r) * 3
+                    let expected = [Float(r) / Float(size - 1), Float(g) / Float(size - 1), Float(b) / Float(size - 1)]
+                    if abs(values[index] - expected[0]) > 0.000001 || abs(values[index + 1] - expected[1]) > 0.000001 || abs(values[index + 2] - expected[2]) > 0.000001 { return false }
+                }
+            }
+        }
+        return true
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(size: values.decode(Int.self, forKey: .size),
+                      values: values.decode([Float].self, forKey: .values),
+                      colorSpace: values.decode(String.self, forKey: .colorSpace))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(size, forKey: .size)
+        try values.encode(self.values, forKey: .values)
+        try values.encode(colorSpace, forKey: .colorSpace)
     }
 
     public init(cubeText: String) throws {

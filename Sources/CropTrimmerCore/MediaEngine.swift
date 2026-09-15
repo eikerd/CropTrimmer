@@ -46,6 +46,8 @@ public actor MediaEngine {
         if !["unknown", "progressive"].contains(field) { restrictions.append("interlaced video") }
         let transfer = video["color_transfer"] as? String ?? "unknown"
         let primaries = video["color_primaries"] as? String ?? "unknown"
+        let matrix = video["color_space"] as? String ?? "unknown"
+        let range = video["color_range"] as? String ?? "unknown"
         if ["smpte2084", "arib-std-b67"].contains(transfer) || ["bt2020", "smpte431", "smpte432"].contains(primaries) {
             restrictions.append("HDR or wide-color video")
         }
@@ -64,7 +66,8 @@ public actor MediaEngine {
                            audioCount: streams.filter { ($0["codec_type"] as? String) == "audio" }.count,
                            subtitleCount: streams.filter { ($0["codec_type"] as? String) == "subtitle" }.count,
                            format: format["format_name"] as? String ?? "unknown", startTime: start,
-                           encodingRestriction: restrictions.isEmpty ? nil : "Encoding is not supported for " + restrictions.joined(separator: ", ") + ".")
+                           encodingRestriction: restrictions.isEmpty ? nil : "Encoding is not supported for " + restrictions.joined(separator: ", ") + ".",
+                           color: SourceColorDescription(pixelFormat: pixel, primaries: primaries, transfer: transfer, matrix: matrix, range: range))
     }
 
     public func plan(source: MediaSource, settings: EditSettings) async throws -> ExportPlan {

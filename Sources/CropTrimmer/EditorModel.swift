@@ -25,6 +25,7 @@ final class EditorModel: ObservableObject {
     @Published var results: [ExportResult] = []
     @Published var showReview = false { didSet { if showReview { pause() } } }
     @Published var errorMessage: String?
+    @Published private(set) var isSuggestingColor = false
     @Published var queueInputErrors: [UUID: [String: String]] = [:]
     @Published var queuePlans: [UUID: ExportPlan] = [:]
     @Published var queuePlanErrors: [UUID: String] = [:]
@@ -123,6 +124,92 @@ final class EditorModel: ObservableObject {
         Task { @MainActor in
             do { try await lookStore.delete(id: look.id); reloadLooks() }
             catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func importCube() {
+        guard !isBusy, !showReview else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.data]; panel.allowsMultipleSelection = false
+        panel.message = "Choose a supported 3D .cube color table."
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                do {
+                    let lut = try ColorLUT(cubeText: String(contentsOf: url, encoding: .utf8))
+                    var next = self?.settings ?? EditSettings()
+                    next.color = ColorSettings(enabled: true, baseLUT: lut)
+                    if let self, let id = self.loops.selectedID { _ = self.updateLoop(id: id, settings: next) }
+                } catch { self?.errorMessage = error.localizedDescription }
+            }
+        }
+    }
+
+    func suggestAutomaticColorCorrection() {
+        guard !isBusy, !showReview, !isSuggestingColor, let source,
+              let loop = loops.selected else { return }
+        let requestedGeneration = generation
+        let loopID = loop.id
+        let sampledTime = loop.start + loop.duration / 2
+        isSuggestingColor = true
+        status = "Analyzing a representative frame…"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isSuggestingColor = false }
+            do {
+                let suggestion = try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime)
+                try Task.checkCancellation()
+                guard self.generation == requestedGeneration,
+                      self.loops.selectedID == loopID,
+                      self.loops.ranges.first(where: { $0.id == loopID })?.settings == loop.settings else { return }
+                var next = loop.settings
+                next.color = ColorSettings(enabled: true, baseLUT: suggestion.fit.lut)
+                guard self.updateLoop(id: loopID, settings: next) == nil else { return }
+                let errorLabel = String(format: "%.3f", suggestion.fit.meanError)
+                self.status = "Automatic correction suggested · \(suggestion.sampleCount) samples · mean error \(errorLabel)"
+            } catch is CancellationError {
+                self.status = "Automatic correction cancelled"
+            } catch {
+                self.errorMessage = error.localizedDescription
+                self.status = "Automatic correction unavailable"
+            }
+        }
+    }
+
+    func importMatchingReference() {
+        guard !isBusy, !showReview, !isSuggestingColor, let source,
+              let loop = loops.selected else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a corrected image of the same frame and composition."
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            let requestedGeneration = self?.generation ?? UUID()
+            let loopID = loop.id
+            let sampledTime = loop.start + loop.duration / 2
+            self?.isSuggestingColor = true
+            self?.status = "Fitting the matching reference frame…"
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.isSuggestingColor = false }
+                do {
+                    let suggestion = try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime, referenceURL: url)
+                    try Task.checkCancellation()
+                    guard self.generation == requestedGeneration,
+                          self.loops.selectedID == loopID,
+                          self.loops.ranges.first(where: { $0.id == loopID })?.settings == loop.settings else { return }
+                    var next = loop.settings
+                    next.color = ColorSettings(enabled: true, baseLUT: suggestion.fit.lut)
+                    guard self.updateLoop(id: loopID, settings: next) == nil else { return }
+                    let errorLabel = String(format: "%.3f", suggestion.fit.meanError)
+                    self.status = "Reference correction suggested · mean error \(errorLabel)"
+                } catch is CancellationError {
+                    self.status = "Reference correction cancelled"
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                    self.status = "Reference correction unavailable"
+                }
+            }
         }
     }
 
