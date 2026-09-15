@@ -71,4 +71,17 @@ final class ColorCorrectionTests: XCTestCase {
         XCTAssertEqual(clamped.y, 1, accuracy: 0.0001)
         XCTAssertEqual(clamped.z, 0.5, accuracy: 0.0001)
     }
+
+    func testCubeSerializationRoundTripsSemanticTable() throws {
+        let lut = try ColorLUT.compile(settings: ColorSettings(enabled: true, gamma: 1.4), size: 3)
+        let decoded = try ColorLUT(cubeText: lut.cubeText)
+        XCTAssertEqual(decoded.size, lut.size)
+        XCTAssertEqual(decoded.values, lut.values)
+        XCTAssertEqual(decoded.colorSpace, "sRGB")
+    }
+
+    func testCubeParserRejectsUnsupportedOrTruncatedTables() {
+        XCTAssertThrowsError(try ColorLUT(cubeText: "LUT_1D_SIZE 16\n"))
+        XCTAssertThrowsError(try ColorLUT(cubeText: "LUT_3D_SIZE 2\n0 0 0\n"))
+    }
 }
