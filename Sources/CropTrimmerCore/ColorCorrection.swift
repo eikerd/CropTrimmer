@@ -63,7 +63,7 @@ public struct ColorLUT: Codable, Equatable, Sendable {
 
     public init(size: Int, values: [Float], colorSpace: String = "sRGB") throws {
         guard (2...65).contains(size), values.count == size * size * size * 3,
-              values.allSatisfy({ $0.isFinite }) else {
+              values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
             throw MediaError.invalid("The 3D color table has an invalid size or payload.")
         }
         guard !colorSpace.isEmpty else { throw MediaError.invalid("The color table has no color space.") }

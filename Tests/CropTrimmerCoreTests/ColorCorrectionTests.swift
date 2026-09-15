@@ -100,6 +100,8 @@ final class ColorCorrectionTests: XCTestCase {
     func testDecodedLUTPayloadIsValidatedBeforeUse() throws {
         let malformed = #"{"size":2,"values":[0,0,0],"colorSpace":"sRGB"}"#.data(using: .utf8)!
         XCTAssertThrowsError(try JSONDecoder().decode(ColorLUT.self, from: malformed))
+        let outOfGamut = #"{"size":2,"values":[2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"colorSpace":"sRGB"}"#.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(ColorLUT.self, from: outOfGamut))
         let valid = try ColorLUT(size: 2, values: Array(repeating: Float(0.5), count: 24))
         let data = try JSONEncoder().encode(valid)
         XCTAssertEqual(try JSONDecoder().decode(ColorLUT.self, from: data), valid)
