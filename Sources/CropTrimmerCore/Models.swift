@@ -44,8 +44,29 @@ public struct EditSettings: Codable, Equatable, Sendable {
     public var lastLockedCropAspectRatio: CropAspectRatio? = nil
     public var cropEnabled = false; public var crop = PixelRect(width: 1920, height: 1080)
     public var method: ExportMethod = .automatic; public var quality: Quality = .balanced
+    public var color = ColorSettings()
     public init() {}
     public init(source: MediaSource) { end = source.duration; crop = PixelRect(width: source.width, height: source.height).constrained(toWidth: source.width, height: source.height) }
+    private enum CodingKeys: String, CodingKey { case start, end, cropAspectRatio, lastLockedCropAspectRatio, cropEnabled, crop, method, quality, color }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        start = try values.decode(Double.self, forKey: .start)
+        end = try values.decode(Double.self, forKey: .end)
+        cropAspectRatio = try values.decodeIfPresent(CropAspectRatio.self, forKey: .cropAspectRatio)
+        lastLockedCropAspectRatio = try values.decodeIfPresent(CropAspectRatio.self, forKey: .lastLockedCropAspectRatio)
+        cropEnabled = try values.decode(Bool.self, forKey: .cropEnabled)
+        crop = try values.decode(PixelRect.self, forKey: .crop)
+        method = try values.decode(ExportMethod.self, forKey: .method)
+        quality = try values.decode(Quality.self, forKey: .quality)
+        color = try values.decodeIfPresent(ColorSettings.self, forKey: .color) ?? ColorSettings()
+    }
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(start, forKey: .start); try values.encode(end, forKey: .end)
+        try values.encode(cropAspectRatio, forKey: .cropAspectRatio); try values.encode(lastLockedCropAspectRatio, forKey: .lastLockedCropAspectRatio)
+        try values.encode(cropEnabled, forKey: .cropEnabled); try values.encode(crop, forKey: .crop)
+        try values.encode(method, forKey: .method); try values.encode(quality, forKey: .quality); try values.encode(color, forKey: .color)
+    }
     public var duration: Double { max(0, end - start) }
     public func validate(source: MediaSource) throws {
         guard start.isFinite, end.isFinite, start >= 0, end <= source.duration + 0.001, end > start else { throw MediaError.invalid("Choose a start before the end, within the movie.") }
