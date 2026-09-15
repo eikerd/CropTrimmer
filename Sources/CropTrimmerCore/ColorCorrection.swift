@@ -48,3 +48,57 @@ public struct ColorSettings: Codable, Equatable, Sendable {
 
     private func clamp(_ value: Float) -> Float { min(1, max(0, value)) }
 }
+
+/// A portable 3D RGB lookup table. Red is the fastest-changing axis, matching
+/// Core Image's cube layout and the explicit adapter used by export.
+public struct ColorLUT: Codable, Equatable, Sendable {
+    public let size: Int
+    public let values: [Float]
+    public let colorSpace: String
+
+    public init(size: Int, values: [Float], colorSpace: String = "sRGB") throws {
+        guard (2...65).contains(size), values.count == size * size * size * 3,
+              values.allSatisfy({ $0.isFinite }) else {
+            throw MediaError.invalid("The 3D color table has an invalid size or payload.")
+        }
+        guard !colorSpace.isEmpty else { throw MediaError.invalid("The color table has no color space.") }
+        self.size = size; self.values = values; self.colorSpace = colorSpace
+    }
+
+    public static func compile(settings: ColorSettings, size: Int = 33) throws -> ColorLUT {
+        try settings.validate()
+        guard (2...65).contains(size) else { throw MediaError.invalid("The 3D color table size is unsupported.") }
+        var values = [Float](); values.reserveCapacity(size * size * size * 3)
+        for b in 0..<size {
+            for g in 0..<size {
+                for r in 0..<size {
+                    let input = SIMD3<Float>(Float(r) / Float(size - 1), Float(g) / Float(size - 1), Float(b) / Float(size - 1))
+                    let output = settings.apply(to: input)
+                    values += [output.x, output.y, output.z]
+                }
+            }
+        }
+        return try ColorLUT(size: size, values: values)
+    }
+
+    public func sample(_ rgb: SIMD3<Float>) -> SIMD3<Float> {
+        let coordinates = SIMD3<Float>(clamp(rgb.x), clamp(rgb.y), clamp(rgb.z)) * Float(size - 1)
+        let lower = SIMD3<Int>(Int(floor(coordinates.x)), Int(floor(coordinates.y)), Int(floor(coordinates.z)))
+        let upper = SIMD3<Int>(min(size - 1, lower.x + 1), min(size - 1, lower.y + 1), min(size - 1, lower.z + 1))
+        let fraction = coordinates - SIMD3<Float>(lower)
+        func value(_ r: Int, _ g: Int, _ b: Int) -> SIMD3<Float> {
+            let index = ((b * size + g) * size + r) * 3
+            return SIMD3<Float>(values[index], values[index + 1], values[index + 2])
+        }
+        let c000 = value(lower.x, lower.y, lower.z), c100 = value(upper.x, lower.y, lower.z)
+        let c010 = value(lower.x, upper.y, lower.z), c110 = value(upper.x, upper.y, lower.z)
+        let c001 = value(lower.x, lower.y, upper.z), c101 = value(upper.x, lower.y, upper.z)
+        let c011 = value(lower.x, upper.y, upper.z), c111 = value(upper.x, upper.y, upper.z)
+        let c00 = c000 + (c100 - c000) * fraction.x, c10 = c010 + (c110 - c010) * fraction.x
+        let c01 = c001 + (c101 - c001) * fraction.x, c11 = c011 + (c111 - c011) * fraction.x
+        let c0 = c00 + (c10 - c00) * fraction.y, c1 = c01 + (c11 - c01) * fraction.y
+        return c0 + (c1 - c0) * fraction.z
+    }
+
+    private func clamp(_ value: Float) -> Float { min(1, max(0, value)) }
+}

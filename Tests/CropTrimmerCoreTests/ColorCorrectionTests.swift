@@ -49,7 +49,10 @@ final class ColorCorrectionTests: XCTestCase {
     func testCompiledLUTSamplesIdentityAndManualTransform() throws {
         let identity = try ColorLUT.compile(settings: ColorSettings(), size: 3)
         XCTAssertEqual(identity.size, 3)
-        XCTAssertEqual(identity.sample(SIMD3<Float>(0.2, 0.4, 0.8)), SIMD3<Float>(0.2, 0.4, 0.8), accuracy: 0.0001)
+        let identitySample = identity.sample(SIMD3<Float>(0.2, 0.4, 0.8))
+        XCTAssertEqual(identitySample.x, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(identitySample.y, 0.4, accuracy: 0.0001)
+        XCTAssertEqual(identitySample.z, 0.8, accuracy: 0.0001)
 
         let manual = try ColorLUT.compile(settings: ColorSettings(enabled: true, gamma: 2), size: 17)
         let sampled = manual.sample(SIMD3<Float>(0.5, 0.5, 0.5))
@@ -59,8 +62,13 @@ final class ColorCorrectionTests: XCTestCase {
 
     func testLUTRejectsInvalidShapeAndSamplesClampedCoordinates() throws {
         XCTAssertThrowsError(try ColorLUT(size: 1, values: [0, 0, 0]))
-        let lut = try ColorLUT(size: 2, values: [0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 1])
-        XCTAssertEqual(lut.sample(SIMD3<Float>(-1, 2, 0.5)).x, 0.5, accuracy: 0.0001)
-        XCTAssertEqual(lut.sample(SIMD3<Float>(-1, 2, 0.5)).y, 0.5, accuracy: 0.0001)
+        let lut = try ColorLUT(size: 2, values: [
+            0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0,
+            0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1
+        ])
+        let clamped = lut.sample(SIMD3<Float>(-1, 2, 0.5))
+        XCTAssertEqual(clamped.x, 0, accuracy: 0.0001)
+        XCTAssertEqual(clamped.y, 1, accuracy: 0.0001)
+        XCTAssertEqual(clamped.z, 0.5, accuracy: 0.0001)
     }
 }
