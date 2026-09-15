@@ -20,6 +20,19 @@ compiler remains the source of truth.
 
 ## OpenRouter
 
+In the inspector, open **Color → Reference**, choose **Another image · AI
+model**, and use the gear to enter the endpoint and model name. Then choose a
+reference image. A blank endpoint opens settings. A blank model name selects
+the custom LUT-service protocol; a nonblank name selects the OpenAI-compatible
+adapter. Auto correction and saved looks have their own tabs.
+
+For OpenRouter, the launch environment must contain `OPENROUTER_API_KEY` or
+`CROPTRIMMER_COLOR_PROVIDER_API_KEY` (the latter takes precedence). The
+OpenRouter-specific variable is only used for `openrouter.ai`. The app does
+not retrieve the key from 1Password itself; launch it with the secret already
+provided by your 1Password environment setup. Only endpoint and model name
+are saved in preferences.
+
 OpenRouter exposes an OpenAI-compatible endpoint at:
 
 ```

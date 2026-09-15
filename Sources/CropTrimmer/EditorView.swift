@@ -7,7 +7,14 @@ struct EditorView: View {
     @ObservedObject var model: EditorModel
     @State private var editingFilename = false
     @State private var filenameDraft = ""
+    @State private var colorTool: ColorTool = .auto
+    @State private var referenceUsesModel = false
+    @State private var showingColorModelSettings = false
     @FocusState private var filenameFocused: Bool
+
+    private enum ColorTool: String, CaseIterable {
+        case auto = "Auto", reference = "Reference", looks = "Looks"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -246,40 +253,91 @@ struct EditorView: View {
 
     private var looksSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("SAVED LOOKS", "paintpalette")
-            Button("Save selected color correction") { model.saveCurrentLook() }
-                .disabled(model.source == nil || model.settings.color.isIdentity)
-                .accessibilityLabel("Save selected color correction as a look")
-            Button("Import 3D LUT…") { model.importCube() }
-                .accessibilityLabel("Import a 3D color LUT")
-            Button(model.isSuggestingColor ? "Analyzing frame…" : "Suggest correction from frame") {
-                model.suggestAutomaticColorCorrection()
-            }
-            .disabled(model.source == nil || model.isBusy || model.isSuggestingColor)
-            .accessibilityLabel("Suggest an automatic color correction from the selected loop")
-            Button("Fit matching reference frame…") { model.importMatchingReference() }
-                .disabled(model.source == nil || model.isBusy || model.isSuggestingColor)
-                .accessibilityLabel("Fit a color correction from a matching reference frame")
-            TextField("Color model endpoint (optional)", text: $model.colorProviderEndpoint)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .accessibilityLabel("Color model HTTPS endpoint")
-            Button(model.isSuggestingColor ? "Asking color model…" : "Match unrelated reference with model…") {
-                model.suggestWithColorProvider()
-            }
-            .disabled(model.source == nil || model.isBusy || model.isSuggestingColor || model.colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityLabel("Ask the configured color model to match an unrelated reference image")
-            ForEach(model.savedLooks) { look in
-                HStack(spacing: 4) {
-                    Button(look.name) { model.applyLook(look) }
-                        .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel("Apply saved look \(look.name)")
-                    Button { model.deleteLook(look) } label: { Image(systemName: "trash") }
-                        .buttonStyle(.plain).help("Delete saved look \(look.name)")
-                        .accessibilityLabel("Delete saved look \(look.name)")
+            HStack {
+                sectionTitle("COLOR", "paintpalette")
+                Spacer()
+                if model.isSuggestingColor {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel("Processing color correction")
+                }
+                Button { showingColorModelSettings = true } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Color model settings")
+                .popover(isPresented: $showingColorModelSettings) {
+                    Form {
+                        TextField("Endpoint", text: $model.colorProviderEndpoint)
+                        TextField("Model", text: $model.colorProviderModel)
+                        HStack {
+                            Spacer()
+                            Button("Done") { showingColorModelSettings = false }
+                        }
+                    }.textFieldStyle(.roundedBorder).padding(16).frame(width: 360)
                 }
             }
+            Picker("Color tool", selection: $colorTool) {
+                ForEach(ColorTool.allCases, id: \.self) { tool in
+                    Text(tool.rawValue).tag(tool)
+                }
+            }.pickerStyle(.segmented).labelsHidden()
+
+            VStack(alignment: .leading, spacing: 12) {
+                switch colorTool {
+                case .auto:
+                    Button(action: model.suggestAutomaticColorCorrection) {
+                        Label("Auto correct", systemImage: "wand.and.stars")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(colorActionsUnavailable)
+                case .reference:
+                    Picker("Reference", selection: $referenceUsesModel) {
+                        Text("Corrected copy of this frame").tag(false)
+                        Text("Another image · AI model").tag(true)
+                    }.labelsHidden().frame(maxWidth: .infinity)
+                    Button {
+                        if referenceUsesModel {
+                            if model.colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                showingColorModelSettings = true
+                            } else {
+                                model.suggestWithColorProvider()
+                            }
+                        } else {
+                            model.importMatchingReference()
+                        }
+                    } label: {
+                        Label("Choose reference…", systemImage: "photo")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(colorActionsUnavailable)
+                case .looks:
+                    HStack {
+                        Button("Save look", action: { model.saveCurrentLook() })
+                            .disabled(colorActionsUnavailable || model.settings.color.isIdentity)
+                        Spacer()
+                        Button("Import LUT…", action: model.importCube)
+                            .disabled(colorActionsUnavailable)
+                    }
+                    ForEach(model.savedLooks) { look in
+                        HStack(spacing: 8) {
+                            Button { model.applyLook(look) } label: {
+                                Text(look.name).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(colorActionsUnavailable)
+                            .accessibilityLabel("Apply saved look \(look.name)")
+                            Button { model.deleteLook(look) } label: { Image(systemName: "trash") }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Delete saved look \(look.name)")
+                        }
+                    }
+                }
+            }.padding(.top, 4)
         }
+    }
+
+    private var colorActionsUnavailable: Bool {
+        model.source == nil || model.isBusy || model.isSuggestingColor || model.showReview
     }
 
     private func sectionTitle(_ title: String, _ symbol: String) -> some View {

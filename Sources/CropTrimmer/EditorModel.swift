@@ -29,6 +29,9 @@ final class EditorModel: ObservableObject {
     @Published var colorProviderEndpoint = UserDefaults.standard.string(forKey: "CropTrimmer.colorProviderEndpoint") ?? "" {
         didSet { UserDefaults.standard.set(colorProviderEndpoint, forKey: "CropTrimmer.colorProviderEndpoint") }
     }
+    @Published var colorProviderModel = UserDefaults.standard.string(forKey: "CropTrimmer.colorProviderModel") ?? "" {
+        didSet { UserDefaults.standard.set(colorProviderModel, forKey: "CropTrimmer.colorProviderModel") }
+    }
     @Published var queueInputErrors: [UUID: [String: String]] = [:]
     @Published var queuePlans: [UUID: ExportPlan] = [:]
     @Published var queuePlanErrors: [UUID: String] = [:]
@@ -221,10 +224,20 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    nonisolated static func colorProviderAPIKey(environment: [String: String], isOpenRouter: Bool) -> String? {
+        func normalized(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+            return value
+        }
+        return normalized(environment["CROPTRIMMER_COLOR_PROVIDER_API_KEY"])
+            ?? (isOpenRouter ? normalized(environment["OPENROUTER_API_KEY"]) : nil)
+    }
+
     func suggestWithColorProvider() {
         guard !isBusy, !showReview, !isSuggestingColor,
               let source, let loop = loops.selected,
               let endpoint = URL(string: colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        let configuredModel = colorProviderModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
@@ -241,11 +254,21 @@ final class EditorModel: ObservableObject {
                 defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
                 do {
                     let result = try await Task.detached(priority: .userInitiated) {
-                        let provider = try HTTPColorSuggestionProvider(endpoint: endpoint)
                         let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: sampledTime)
                         let reference = try Data(contentsOf: url, options: .mappedIfSafe)
                         guard reference.count <= 16 * 1024 * 1024 else { throw MediaError.failed("The reference image is too large for a color provider request.") }
-                        return try await provider.suggest(ColorSuggestionRequest(mode: .unrelatedReference, sourceImage: frame, referenceImage: reference, sourceID: source.id.uuidString))
+                        let request = ColorSuggestionRequest(mode: .unrelatedReference, sourceImage: frame, referenceImage: reference, sourceID: source.id.uuidString)
+                        if configuredModel.isEmpty {
+                            return try await HTTPColorSuggestionProvider(endpoint: endpoint).suggest(request)
+                        }
+                        let environment = ProcessInfo.processInfo.environment
+                        let isOpenRouter = endpoint.host?.lowercased() == "openrouter.ai"
+                        let apiKey = Self.colorProviderAPIKey(environment: environment, isOpenRouter: isOpenRouter)
+                        guard !isOpenRouter || apiKey != nil else {
+                            throw MediaError.invalid("Set OPENROUTER_API_KEY before asking OpenRouter for a color suggestion.")
+                        }
+                        let configuration = try OpenAICompatibleColorSuggestionProvider.Configuration(endpoint: endpoint, model: configuredModel, apiKey: apiKey)
+                        return try await OpenAICompatibleColorSuggestionProvider(configuration: configuration).suggest(request)
                     }.value
                     try Task.checkCancellation()
                     guard let lut = result.lut,
