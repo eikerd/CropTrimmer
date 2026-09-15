@@ -31,3 +31,11 @@ These are three local Codex passes, not independent bot reviews.
    guards, exercised Auto/Reference/Looks navigation and the settings popover,
    confirmed accessible control names, and reviewed the final packaged render.
    The owner approved the layout: “Yes, much better.”
+
+## Independent review follow-up
+
+CodeRabbit found that a blank primary credential suppressed the OpenRouter
+fallback. Commit `a9aea39` normalizes both values before choosing a credential.
+Two tests cover blank/whitespace values, precedence, missing credentials, and
+the OpenRouter host restriction. The full suite now passes 56 tests.
+This was a small functional bug missed by the initial local passes.
