@@ -58,9 +58,15 @@ Encoding is limited to supported progressive SDR square-pixel sources, including
 
 The process runner and estimates are cancellable. Publication uses a no-replace filesystem operation on the destination volume. External-drive behavior has not yet been tested on physical removable media; unsupported publication operations fail rather than falling back to an overwrite-prone implementation.
 
-## Planned color correction
+## Color correction and optional models
 
-Color correction is not implemented yet. The [execution plan](docs/plans/color-correction.md) breaks manual controls, saved looks, reference fitting, and model evaluation into bounded tasks and verification gates. Next agents should start with C00, the preview/export color-consistency experiment, before implementing controls.
+The editor supports manual black/white levels, gamma, saturation, saved looks,
+`.cube` import, Core Image automatic enhancement, matching-reference fitting,
+and an optional OpenAI-compatible vision-provider boundary. The provider can be
+backed by OpenRouter or a local llama.cpp/MLX server; it returns bounded
+parameters that are compiled into the same validated LUT used by preview and
+export. See [color-provider.md](docs/color-provider.md) for the M1 fallback and
+secret-handling guidance.
 
 ## Code layout
 
