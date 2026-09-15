@@ -35,4 +35,26 @@ final class ColorSuggestionTests: XCTestCase {
         XCTAssertEqual(decoded.referenceImage, Data([3, 4]))
         XCTAssertEqual(decoded.sourceID, "source")
     }
+
+    func testOpenAICompatibleProviderParsesConservativeProposal() throws {
+        let proposal = try OpenAICompatibleColorSuggestionProvider.parseProposal("```json\n{\"black_point\":0.04,\"whitePoint\":0.96,\"gamma\":1.1,\"saturation\":1.05}\n```")
+        XCTAssertEqual(proposal.blackPoint, 0.04, accuracy: 0.0001)
+        XCTAssertEqual(proposal.whitePoint, 0.96, accuracy: 0.0001)
+        XCTAssertEqual(proposal.gamma, 1.1, accuracy: 0.0001)
+        XCTAssertEqual(proposal.saturation, 1.05, accuracy: 0.0001)
+        XCTAssertNoThrow(try proposal.colorSettings())
+    }
+
+    func testOpenAICompatibleProviderRejectsUnsafeProposal() throws {
+        XCTAssertThrowsError(try OpenAICompatibleColorSuggestionProvider.parseProposal("{\"blackPoint\":0.8,\"whitePoint\":0.2,\"gamma\":1,\"saturation\":1}")) { error in
+            guard case MediaError.invalid = error else { return XCTFail("Expected invalid color settings, got \(error)") }
+        }
+    }
+
+    func testOpenAICompatibleConfigurationUsesHTTPSOrLoopbackAndRequiresModel() throws {
+        XCTAssertNoThrow(try OpenAICompatibleColorSuggestionProvider.Configuration(endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions")!, model: "qwen/qwen2.5-vl-7b-instruct"))
+        XCTAssertNoThrow(try OpenAICompatibleColorSuggestionProvider.Configuration(endpoint: URL(string: "http://127.0.0.1:8080/v1/chat/completions")!, model: "local-vision"))
+        XCTAssertThrowsError(try OpenAICompatibleColorSuggestionProvider.Configuration(endpoint: URL(string: "http://example.com/v1/chat/completions")!, model: "local-vision"))
+        XCTAssertThrowsError(try OpenAICompatibleColorSuggestionProvider.Configuration(endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions")!, model: "  "))
+    }
 }
