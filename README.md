@@ -63,10 +63,11 @@ The process runner and estimates are cancellable. Publication uses a no-replace 
 The editor supports manual black/white levels, gamma, saturation, saved looks,
 `.cube` import, Core Image automatic enhancement, matching-reference fitting,
 and an optional OpenAI-compatible vision-provider boundary. The provider can be
-backed by OpenRouter or a local llama.cpp/MLX server; it returns bounded
-parameters that are compiled into the same validated LUT used by preview and
-export. See [color-provider.md](docs/color-provider.md) for the M1 fallback and
-secret-handling guidance.
+backed by OpenRouter or a local llama.cpp/MLX server; it returns bounded global
+exposure and color-intensity parameters that are compiled into the same
+validated LUT used by preview and export. Channel-specific white balance is
+outside this first provider contract. See [color-provider.md](docs/color-provider.md)
+for the M1 fallback and secret-handling guidance.
 
 ## Code layout
 

@@ -203,7 +203,7 @@ public actor OpenAICompatibleColorSuggestionProvider: ColorSuggestionProvider {
         }
 
         let instruction = """
-        You are a conservative colorist. Compare the SOURCE frame to the REFERENCE image and return only one JSON object with these numeric keys: blackPoint, whitePoint, gamma, saturation. Use normalized values: blackPoint and whitePoint from 0 to 1 with whitePoint at least 1/255 above blackPoint, gamma from 0.25 to 4 where values above 1 lift midtones, and saturation from 0 to 2 where 1 is unchanged. Correct exposure and neutral color balance conservatively; do not crop, sharpen, invent detail, or describe the images. Return no markdown and no extra keys.
+        You are a conservative colorist. Compare the SOURCE frame to the REFERENCE image and return only one JSON object with these numeric keys: blackPoint, whitePoint, gamma, saturation. Use normalized values: blackPoint and whitePoint from 0 to 1 with whitePoint at least 1/255 above blackPoint, gamma from 0.25 to 4 where values above 1 lift midtones, and saturation from 0 to 2 where 1 is unchanged. Correct global exposure and color intensity conservatively; channel-specific white balance is unavailable. Do not crop, sharpen, invent detail, or describe the images. Return no markdown and no extra keys.
         """
         let payload = Request(model: configuration.model, messages: [Message(role: "user", content: [
             .text(instruction), .text("SOURCE frame:"), .image(Self.dataURL(for: source)),
