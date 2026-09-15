@@ -26,6 +26,9 @@ final class EditorModel: ObservableObject {
     @Published var showReview = false { didSet { if showReview { pause() } } }
     @Published var errorMessage: String?
     @Published private(set) var isSuggestingColor = false
+    @Published var colorProviderEndpoint = UserDefaults.standard.string(forKey: "CropTrimmer.colorProviderEndpoint") ?? "" {
+        didSet { UserDefaults.standard.set(colorProviderEndpoint, forKey: "CropTrimmer.colorProviderEndpoint") }
+    }
     @Published var queueInputErrors: [UUID: [String: String]] = [:]
     @Published var queuePlans: [UUID: ExportPlan] = [:]
     @Published var queuePlanErrors: [UUID: String] = [:]
@@ -213,6 +216,51 @@ final class EditorModel: ObservableObject {
                 } catch {
                     self.errorMessage = error.localizedDescription
                     self.status = "Reference correction unavailable"
+                }
+            }
+        }
+    }
+
+    func suggestWithColorProvider() {
+        guard !isBusy, !showReview, !isSuggestingColor,
+              let source, let loop = loops.selected,
+              let endpoint = URL(string: colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a reference image for the configured color model."
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            let requestedGeneration = self?.generation ?? UUID()
+            let loopID = loop.id
+            let sampledTime = loop.start + loop.duration / 2
+            self?.isSuggestingColor = true
+            self?.status = "Asking the color model for a reference match…"
+            self?.colorSuggestionTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
+                do {
+                    let result = try await Task.detached(priority: .userInitiated) {
+                        let provider = try HTTPColorSuggestionProvider(endpoint: endpoint)
+                        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: sampledTime)
+                        let reference = try Data(contentsOf: url, options: .mappedIfSafe)
+                        guard reference.count <= 16 * 1024 * 1024 else { throw MediaError.failed("The reference image is too large for a color provider request.") }
+                        return try await provider.suggest(ColorSuggestionRequest(mode: .unrelatedReference, sourceImage: frame, referenceImage: reference, sourceID: source.id.uuidString))
+                    }.value
+                    try Task.checkCancellation()
+                    guard let lut = result.lut,
+                          self.generation == requestedGeneration,
+                          self.loops.selectedID == loopID,
+                          self.loops.ranges.first(where: { $0.id == loopID })?.settings == loop.settings else { return }
+                    var next = loop.settings
+                    next.color = ColorSettings(enabled: true, baseLUT: lut)
+                    guard self.updateLoop(id: loopID, settings: next) == nil else { return }
+                    self.status = "Reference color model suggestion applied"
+                } catch is CancellationError {
+                    self.status = "Reference color model request cancelled"
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                    self.status = "Reference color model unavailable"
                 }
             }
         }

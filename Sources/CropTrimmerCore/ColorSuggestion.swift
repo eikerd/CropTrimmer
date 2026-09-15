@@ -9,10 +9,11 @@ public enum ColorSuggestionMode: String, Codable, Sendable {
 public struct ColorSuggestionRequest: Codable, Sendable {
     public let mode: ColorSuggestionMode
     public let samples: [ColorSample]
+    public let sourceImage: Data?
     public let referenceImage: Data?
     public let sourceID: String?
-    public init(mode: ColorSuggestionMode, samples: [ColorSample] = [], referenceImage: Data? = nil, sourceID: String? = nil) {
-        self.mode = mode; self.samples = samples; self.referenceImage = referenceImage; self.sourceID = sourceID
+    public init(mode: ColorSuggestionMode, samples: [ColorSample] = [], sourceImage: Data? = nil, referenceImage: Data? = nil, sourceID: String? = nil) {
+        self.mode = mode; self.samples = samples; self.sourceImage = sourceImage; self.referenceImage = referenceImage; self.sourceID = sourceID
     }
 }
 
