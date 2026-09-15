@@ -224,6 +224,15 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    nonisolated static func colorProviderAPIKey(environment: [String: String], isOpenRouter: Bool) -> String? {
+        func normalized(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+            return value
+        }
+        return normalized(environment["CROPTRIMMER_COLOR_PROVIDER_API_KEY"])
+            ?? (isOpenRouter ? normalized(environment["OPENROUTER_API_KEY"]) : nil)
+    }
+
     func suggestWithColorProvider() {
         guard !isBusy, !showReview, !isSuggestingColor,
               let source, let loop = loops.selected,
@@ -254,7 +263,7 @@ final class EditorModel: ObservableObject {
                         }
                         let environment = ProcessInfo.processInfo.environment
                         let isOpenRouter = endpoint.host?.lowercased() == "openrouter.ai"
-                        let apiKey = environment["CROPTRIMMER_COLOR_PROVIDER_API_KEY"] ?? (isOpenRouter ? environment["OPENROUTER_API_KEY"] : nil)
+                        let apiKey = Self.colorProviderAPIKey(environment: environment, isOpenRouter: isOpenRouter)
                         guard !isOpenRouter || apiKey != nil else {
                             throw MediaError.invalid("Set OPENROUTER_API_KEY before asking OpenRouter for a color suggestion.")
                         }
