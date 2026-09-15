@@ -79,8 +79,9 @@ public struct EditSettings: Codable, Equatable, Sendable {
 public struct ExportPlan: Sendable {
     public let source: MediaSource; public let settings: EditSettings; public let method: ResolvedMethod
     public let plannedStart: Double; public let plannedEnd: Double; public let copyCutEnd: Double?; public let fileExtension: String; public let explanation: String
-    public init(source: MediaSource, settings: EditSettings, method: ResolvedMethod, plannedStart: Double, plannedEnd: Double, fileExtension: String = "mp4", explanation: String, copyCutEnd: Double? = nil) {
-        self.source = source; self.settings = settings; self.method = method; self.plannedStart = plannedStart; self.plannedEnd = plannedEnd; self.copyCutEnd = copyCutEnd; self.fileExtension = fileExtension; self.explanation = explanation
+    public let colorLUT: ColorLUT?
+    public init(source: MediaSource, settings: EditSettings, method: ResolvedMethod, plannedStart: Double, plannedEnd: Double, fileExtension: String = "mp4", explanation: String, copyCutEnd: Double? = nil, colorLUT: ColorLUT? = nil) {
+        self.source = source; self.settings = settings; self.method = method; self.plannedStart = plannedStart; self.plannedEnd = plannedEnd; self.copyCutEnd = copyCutEnd; self.fileExtension = fileExtension; self.explanation = explanation; self.colorLUT = colorLUT
     }
     public var width: Int { settings.cropEnabled ? settings.crop.width : source.width }
     public var height: Int { settings.cropEnabled ? settings.crop.height : source.height }

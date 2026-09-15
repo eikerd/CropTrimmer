@@ -100,5 +100,20 @@ public struct ColorLUT: Codable, Equatable, Sendable {
         return c0 + (c1 - c0) * fraction.z
     }
 
+    /// Writes the table in the text format understood by FFmpeg's lut3d filter.
+    public var cubeText: String {
+        var text = "TITLE \"Crop Trimmer color correction\"\nLUT_3D_SIZE \(size)\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n"
+        text.reserveCapacity(values.count * 10)
+        for b in 0..<size {
+            for g in 0..<size {
+                for r in 0..<size {
+                    let index = ((b * size + g) * size + r) * 3
+                    text += String(format: "%.9f %.9f %.9f\n", values[index], values[index + 1], values[index + 2])
+                }
+            }
+        }
+        return text
+    }
+
     private func clamp(_ value: Float) -> Float { min(1, max(0, value)) }
 }
