@@ -39,3 +39,9 @@ fallback. Commit `a9aea39` normalizes both values before choosing a credential.
 Two tests cover blank/whitespace values, precedence, missing credentials, and
 the OpenRouter host restriction. The full suite now passes 56 tests.
 This was a small functional bug missed by the initial local passes.
+
+Round two requested composition-level regression coverage. A generated one-frame
+gray movie now goes through `AVAssetImageGenerator.videoComposition`, comparing
+corrected brightness with the decoded original and checking neutral channels.
+Both renderer tests pass. This closes the automated attachment gap; no artificial
+filter-failure seam was added just to exercise the fallback.
