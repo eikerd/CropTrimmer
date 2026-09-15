@@ -2,6 +2,7 @@ import AVFoundation
 import CoreImage
 import CropTrimmerCore
 import Foundation
+import ImageIO
 
 /// Produces a bounded local color suggestion from one sampled frame. Core Image's
 /// auto-adjustment filters provide the target frame; the shared fitter turns the
@@ -25,6 +26,30 @@ enum AutomaticColorSuggestion {
         let source = CIImage(cgImage: frame)
         let target = try adjustedImage(source)
         return try fit(source: source, target: target, sampleSide: sampleSide)
+    }
+
+    /// Encodes the upright representative frame for a reference-conditioned
+    /// provider. The image is transient request data and is never added to the
+    /// media library.
+    static func framePNGData(url: URL, time: Double) async throws -> Data {
+        guard url.isFileURL, time.isFinite, time >= 0 else {
+            throw MediaError.invalid("Choose a valid movie frame for color correction.")
+        }
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let frame = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 60_000)).image
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
+            throw MediaError.failed("The representative frame could not be encoded.")
+        }
+        CGImageDestinationAddImage(destination, frame, nil)
+        guard CGImageDestinationFinalize(destination) else { throw MediaError.failed("The representative frame could not be encoded.") }
+        let result = Data(data)
+        guard result.count <= 16 * 1024 * 1024 else { throw MediaError.failed("The representative frame is too large for a color provider request.") }
+        return result
     }
 
     static func suggest(url: URL, time: Double, referenceURL: URL, sampleSide: Int = 32) async throws -> Result {

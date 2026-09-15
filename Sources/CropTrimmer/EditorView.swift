@@ -260,6 +260,15 @@ struct EditorView: View {
             Button("Fit matching reference frame…") { model.importMatchingReference() }
                 .disabled(model.source == nil || model.isBusy || model.isSuggestingColor)
                 .accessibilityLabel("Fit a color correction from a matching reference frame")
+            TextField("Color model endpoint (optional)", text: $model.colorProviderEndpoint)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .accessibilityLabel("Color model HTTPS endpoint")
+            Button(model.isSuggestingColor ? "Asking color model…" : "Match unrelated reference with model…") {
+                model.suggestWithColorProvider()
+            }
+            .disabled(model.source == nil || model.isBusy || model.isSuggestingColor || model.colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityLabel("Ask the configured color model to match an unrelated reference image")
             ForEach(model.savedLooks) { look in
                 HStack(spacing: 4) {
                     Button(look.name) { model.applyLook(look) }

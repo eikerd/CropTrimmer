@@ -27,4 +27,12 @@ final class ColorSuggestionTests: XCTestCase {
         XCTAssertNoThrow(try HTTPColorSuggestionProvider(endpoint: URL(string: "http://127.0.0.1:8080/color")!))
         XCTAssertNoThrow(try HTTPColorSuggestionProvider(endpoint: URL(string: "https://example.com/color")!))
     }
+
+    func testReferenceProviderRequestCarriesSourceAndReferenceImages() throws {
+        let request = ColorSuggestionRequest(mode: .unrelatedReference, sourceImage: Data([1, 2]), referenceImage: Data([3, 4]), sourceID: "source")
+        let decoded = try JSONDecoder().decode(ColorSuggestionRequest.self, from: JSONEncoder().encode(request))
+        XCTAssertEqual(decoded.sourceImage, Data([1, 2]))
+        XCTAssertEqual(decoded.referenceImage, Data([3, 4]))
+        XCTAssertEqual(decoded.sourceID, "source")
+    }
 }
