@@ -58,6 +58,10 @@ Encoding is limited to supported progressive SDR square-pixel sources, including
 
 The process runner and estimates are cancellable. Publication uses a no-replace filesystem operation on the destination volume. External-drive behavior has not yet been tested on physical removable media; unsupported publication operations fail rather than falling back to an overwrite-prone implementation.
 
+## Planned color correction
+
+Color correction is not implemented yet. The [execution plan](docs/plans/color-correction.md) breaks manual controls, saved looks, reference fitting, and model evaluation into bounded tasks and verification gates. Next agents should start with C00, the preview/export color-consistency experiment, before implementing controls.
+
 ## Code layout
 
 - `Sources/CropTrimmerCore/MovieLoops.swift`: bounded independent loop ranges, selection, fixed-length moves, and presets.
