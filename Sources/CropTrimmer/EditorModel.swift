@@ -156,7 +156,9 @@ final class EditorModel: ObservableObject {
             guard let self else { return }
             defer { self.isSuggestingColor = false }
             do {
-                let suggestion = try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime)
+                let suggestion = try await Task.detached(priority: .userInitiated) {
+                    try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime)
+                }.value
                 try Task.checkCancellation()
                 guard self.generation == requestedGeneration,
                       self.loops.selectedID == loopID,
@@ -193,7 +195,9 @@ final class EditorModel: ObservableObject {
                 guard let self else { return }
                 defer { self.isSuggestingColor = false }
                 do {
-                    let suggestion = try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime, referenceURL: url)
+                    let suggestion = try await Task.detached(priority: .userInitiated) {
+                        try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime, referenceURL: url)
+                    }.value
                     try Task.checkCancellation()
                     guard self.generation == requestedGeneration,
                           self.loops.selectedID == loopID,
