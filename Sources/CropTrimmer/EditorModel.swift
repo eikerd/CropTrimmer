@@ -45,6 +45,7 @@ final class EditorModel: ObservableObject {
     private var planningTask: Task<Void, Never>?
     private var thumbnailTask: Task<Void, Never>?
     private var jobTask: Task<Void, Never>?
+    private var colorSuggestionTask: Task<Void, Never>?
     private var timeObserver: Any?
     private var boundaryObserver: Any?
     private var endObserver: NSObjectProtocol?
@@ -152,9 +153,9 @@ final class EditorModel: ObservableObject {
         let sampledTime = loop.start + loop.duration / 2
         isSuggestingColor = true
         status = "Analyzing a representative frame…"
-        Task { @MainActor [weak self] in
+        colorSuggestionTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.isSuggestingColor = false }
+            defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
             do {
                 let suggestion = try await Task.detached(priority: .userInitiated) {
                     try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime)
@@ -191,9 +192,9 @@ final class EditorModel: ObservableObject {
             let sampledTime = loop.start + loop.duration / 2
             self?.isSuggestingColor = true
             self?.status = "Fitting the matching reference frame…"
-            Task { @MainActor [weak self] in
+            self?.colorSuggestionTask = Task { @MainActor [weak self] in
                 guard let self else { return }
-                defer { self.isSuggestingColor = false }
+                defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
                 do {
                     let suggestion = try await Task.detached(priority: .userInitiated) {
                         try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime, referenceURL: url)
@@ -252,7 +253,7 @@ final class EditorModel: ObservableObject {
     private func loadMovie(_ url: URL, preserving snapshot: (loops: MovieLoops, position: Double, identity: SourceIdentity)? = nil) {
         guard !isBusy else { status = "Finish or cancel the current operation before opening another movie."; return }
         guard url.isFileURL else { errorMessage = "Drop a local movie file."; return }
-        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel()
+        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); colorSuggestionTask?.cancel()
         pause(); player.replaceCurrentItem(with: nil)
         generation = UUID(); let requestedGeneration = generation
         scopedURL?.stopAccessingSecurityScopedResource(); scopedURL = nil
@@ -692,12 +693,12 @@ final class EditorModel: ObservableObject {
     }
     private func finishJob(_ id: UUID) { guard jobID == id else { return }; jobID = nil; isBusy = false; jobTask = nil }
     func cancel() {
-        status = "Cancelling…"; openingTask?.cancel(); jobTask?.cancel()
+        status = "Cancelling…"; openingTask?.cancel(); jobTask?.cancel(); colorSuggestionTask?.cancel()
         Task { await engine.cancel() }
     }
     func reveal(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
     func shutdown() {
-        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); jobTask?.cancel()
+        openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); jobTask?.cancel(); colorSuggestionTask?.cancel()
         pause()
         if let timeObserver { player.removeTimeObserver(timeObserver); self.timeObserver = nil }
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver); self.boundaryObserver = nil }
