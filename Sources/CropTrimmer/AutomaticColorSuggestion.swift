@@ -55,9 +55,10 @@ enum AutomaticColorSuggestion {
 
     private static func adjustedImage(_ image: CIImage) throws -> CIImage {
         var adjusted = image
+        // The `features` option expects an array of detected feature objects;
+        // passing a Boolean causes Core Image to throw an Objective-C exception.
         let filters = image.autoAdjustmentFilters(options: [CIImageAutoAdjustmentOption.enhance: true,
-                                                            CIImageAutoAdjustmentOption.redEye: false,
-                                                            CIImageAutoAdjustmentOption.features: false])
+                                                            CIImageAutoAdjustmentOption.redEye: false])
         for filter in filters {
             filter.setValue(adjusted, forKey: kCIInputImageKey)
             adjusted = filter.outputImage ?? adjusted
