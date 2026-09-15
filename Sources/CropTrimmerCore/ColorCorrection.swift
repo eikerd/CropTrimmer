@@ -65,6 +65,36 @@ public struct ColorLUT: Codable, Equatable, Sendable {
         self.size = size; self.values = values; self.colorSpace = colorSpace
     }
 
+    public init(cubeText: String) throws {
+        var size: Int?
+        var domainMin: [Float] = [0, 0, 0], domainMax: [Float] = [1, 1, 1]
+        var samples: [Float] = []
+        for rawLine in cubeText.split(whereSeparator: \.isNewline) {
+            let line = rawLine.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard !fields.isEmpty else { continue }
+            switch fields[0].uppercased() {
+            case "TITLE": continue
+            case "LUT_1D_SIZE": throw MediaError.invalid("1D LUTs are not supported; import a 3D color table.")
+            case "LUT_3D_SIZE":
+                guard fields.count == 2, let value = Int(fields[1]), (2...65).contains(value), size == nil else { throw MediaError.invalid("The 3D LUT size is invalid.") }
+                size = value
+            case "DOMAIN_MIN", "DOMAIN_MAX":
+                let values = fields.dropFirst().compactMap { Float($0) }
+                guard fields.count == 4, values.count == 3, values.allSatisfy({ $0.isFinite }) else { throw MediaError.invalid("The LUT domain is invalid.") }
+                if fields[0].uppercased() == "DOMAIN_MIN" { domainMin = values } else { domainMax = values }
+            default:
+                let values = fields.compactMap { Float($0) }
+                guard fields.count == 3, values.count == 3, values.allSatisfy({ $0.isFinite }) else { throw MediaError.invalid("The LUT contains an invalid sample.") }
+                samples += values
+            }
+        }
+        guard let size, domainMin == [0, 0, 0], domainMax == [1, 1, 1], samples.count == size * size * size * 3 else {
+            throw MediaError.invalid("The LUT is missing a supported unit 3D table.")
+        }
+        try self.init(size: size, values: samples)
+    }
+
     public static func compile(settings: ColorSettings, size: Int = 33) throws -> ColorLUT {
         try settings.validate()
         guard (2...65).contains(size) else { throw MediaError.invalid("The 3D color table size is unsupported.") }
