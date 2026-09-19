@@ -242,6 +242,8 @@ final class EditorIntegrationTests: XCTestCase {
         model.selectLoop(first)
         model.removeLoop(extra)
         XCTAssertEqual(model.loops.ranges.map(\.id), [first, second], "Deleting an unselected loop removes that loop, not the selected one")
+        XCTAssertEqual(model.loops.selectedID, first, "and keeps the selection")
+        XCTAssertEqual(model.position, firstSettings.start, "and leaves the playhead where it was")
         model.selectLoop(first)
         XCTAssertEqual(model.settings, firstSettings)
         model.selectLoop(second)

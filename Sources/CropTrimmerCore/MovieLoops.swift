@@ -40,13 +40,14 @@ public struct MovieLoops: Equatable, Sendable {
     }
 
     /// A new loop starts at the selected loop's out point (B), so pressing + repeatedly chains loops
-    /// end to end. If less than the default length remains, it runs to the end of the movie. Only
-    /// when the selected loop already ends at the movie's end does it fall back to an unused spot;
-    /// overlap is allowed and remains editable.
+    /// end to end. Whatever remains after B — a full length or a fraction of a second — is the new
+    /// loop's range, running to the end of the movie when less than a full length is left. Only when
+    /// the selected loop already ends at the movie's end (nothing beyond float dust remains) does it
+    /// fall back to an unused spot; overlap is allowed and remains editable.
     @discardableResult public mutating func add(length requestedLength: Double) -> Bool {
         guard ranges.count < Self.maximumCount, sourceDuration > 0 else { return false }
         let length = Self.length(requestedLength, within: sourceDuration)
-        if let out = selected?.end, sourceDuration - out >= Self.minimumLength {
+        if let out = selected?.end, sourceDuration - out > 0.001 {
             let loop = MovieLoop(start: out, end: min(out + length, sourceDuration), settings: selected?.settings ?? EditSettings())
             ranges.append(loop); selectedID = loop.id
             return true
@@ -65,11 +66,18 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
-    @discardableResult public mutating func removeSelected() -> Bool {
-        guard ranges.count > 1, let index = ranges.firstIndex(where: { $0.id == selectedID }) else { return false }
+    /// Removes any loop but the last one. Removing the selected loop selects its neighbour;
+    /// removing another loop leaves the selection alone.
+    @discardableResult public mutating func remove(_ id: UUID) -> Bool {
+        guard ranges.count > 1, let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
         ranges.remove(at: index)
-        selectedID = ranges[min(index, ranges.count - 1)].id
+        if selectedID == id { selectedID = ranges[min(index, ranges.count - 1)].id }
         return true
+    }
+
+    @discardableResult public mutating func removeSelected() -> Bool {
+        guard let selectedID else { return false }
+        return remove(selectedID)
     }
 
     @discardableResult public mutating func updateSelected(start: Double, end: Double) -> Bool {

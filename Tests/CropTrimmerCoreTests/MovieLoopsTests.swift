@@ -99,6 +99,32 @@ final class MovieLoopsTests: XCTestCase {
         XCTAssertEqual(loops.ranges[1].start, 5); XCTAssertEqual(loops.ranges[1].end, 8)
     }
 
+    func testRemovingAnUnselectedLoopKeepsTheSelection() throws {
+        var loops = MovieLoops(sourceDuration: 60)
+        let first = try XCTUnwrap(loops.selectedID)
+        XCTAssertTrue(loops.add(length: 5)); let second = try XCTUnwrap(loops.selectedID)
+        XCTAssertTrue(loops.add(length: 5)); let third = try XCTUnwrap(loops.selectedID)
+        XCTAssertTrue(loops.select(first))
+        XCTAssertTrue(loops.remove(third))
+        XCTAssertEqual(loops.selectedID, first)
+        XCTAssertEqual(loops.ranges.map(\.id), [first, second])
+        XCTAssertTrue(loops.remove(first))
+        XCTAssertEqual(loops.selectedID, second, "Removing the selected loop selects its neighbour")
+        XCTAssertFalse(loops.remove(second), "The last loop stays")
+        XCTAssertFalse(loops.remove(UUID()))
+    }
+
+    func testAddChainsEvenAShortRemainderAndFallsBackOnlyAtTheEnd() throws {
+        var loops = MovieLoops(sourceDuration: 60)
+        XCTAssertTrue(loops.updateSelected(start: 50, end: 59.95))
+        XCTAssertTrue(loops.add(length: 5))
+        XCTAssertEqual(try XCTUnwrap(loops.selected).start, 59.95, accuracy: 0.000000001)
+        XCTAssertEqual(loops.selected?.end, 60)
+        XCTAssertTrue(loops.add(length: 5))
+        XCTAssertNotEqual(loops.selected?.start, 60, "B at the movie's end cannot chain; the loop takes an unused spot")
+        XCTAssertEqual(loops.selected?.duration, 5)
+    }
+
     func testAddChainsFromTheSelectedOutPoint() throws {
         var loops = MovieLoops(sourceDuration: 60)
         XCTAssertTrue(loops.updateSelected(start: 2, end: 9.5))

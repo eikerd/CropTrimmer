@@ -555,10 +555,13 @@ final class EditorModel: ObservableObject {
     }
 
     /// Deletes any loop, not just the selected one; the trash buttons on queue cards and loop bars call this.
+    /// Deleting an unselected loop leaves the selection, the playhead and playback alone.
     func removeLoop(_ id: UUID) {
         guard !isBusy, !showReview, loops.ranges.count > 1, loops.ranges.contains(where: { $0.id == id }) else { return }
-        if loops.selectedID != id { selectLoop(id) }
-        removeLoop()
+        if loops.selectedID == id { removeLoop(); return }
+        guard loops.remove(id) else { return }
+        queueInputErrors[id] = nil; queueEstimates[id] = nil
+        schedulePlan(preserveStatus: true)
     }
 
     func removeLoop() {
