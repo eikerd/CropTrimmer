@@ -61,6 +61,8 @@ final class EditorModel: ObservableObject {
     private var playbackOrigin: Double = 0
     private var looping = false
     private var wantsPlayback = false
+    /// Carries "was playing" across the async gap while another movie opens.
+    private var resumeAfterOpening = false
     private var playbackRevision: UInt64 = 0
     private var generation = UUID()
     private var jobID: UUID?
@@ -325,7 +327,9 @@ final class EditorModel: ObservableObject {
         guard !isBusy else { status = "Finish or cancel the current operation before opening another movie."; return }
         guard url.isFileURL else { errorMessage = "Drop a local movie file."; return }
         openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); colorSuggestionTask?.cancel()
+        let resume = wantsPlayback || resumeAfterOpening
         pause(); player.replaceCurrentItem(with: nil)
+        resumeAfterOpening = resume
         generation = UUID(); let requestedGeneration = generation
         scopedURL?.stopAccessingSecurityScopedResource(); scopedURL = nil
         if url.startAccessingSecurityScopedResource() { scopedURL = url }
@@ -360,9 +364,10 @@ final class EditorModel: ObservableObject {
                 player.volume = Float(volume); player.isMuted = muted
                 isBusy = false; status = "Ready · \(inspected.width) × \(inspected.height) · \(timeLabel(inspected.duration))"
                 updateBoundaryObserver(); schedulePlan(); loadThumbnails(asset: asset, source: inspected)
+                if resumeAfterOpening { resumeAfterOpening = false; resumePlayback() }
             } catch {
                 guard generation == requestedGeneration else { return }
-                isBusy = false
+                isBusy = false; resumeAfterOpening = false
                 if error is CancellationError {
                     status = snapshot == nil ? "Opening cancelled" : "Renamed to \(url.lastPathComponent) · reload cancelled"
                 }
@@ -457,8 +462,21 @@ final class EditorModel: ObservableObject {
         guard source != nil, !isBusy, !showReview else { return }
         cropAdjusting = false
         if wantsPlayback { pause(); return }
+        resumePlayback()
+    }
+
+    /// Playing is sticky: edits, loop changes and opening another movie keep playing if it was.
+    /// Only things that need a still frame (export, review, crop, frame step, Stop) stop it.
+    private func keepingPlayback(_ change: () -> Void) {
+        let resume = wantsPlayback
+        change()
+        if resume { resumePlayback() }
+    }
+
+    private func resumePlayback() {
+        guard let source, !isBusy, !showReview, !cropAdjusting else { return }
         if playbackMode != .whole && (position < settings.start || position >= settings.end - 0.001) { seek(settings.start) }
-        else if let source, position >= source.duration - 0.001 { seek(0) }
+        else if position >= source.duration - 0.001 { seek(0) }
         wantsPlayback = true; player.play(); isPlaying = true
     }
     func stop() { guard !isBusy, !showReview else { return }; cropAdjusting = false; pause(); seek(playbackMode == .whole ? 0 : settings.start) }
@@ -470,8 +488,8 @@ final class EditorModel: ObservableObject {
         if direction > 0 && !item.canStepForward { status = "This movie does not support forward frame stepping."; return }
         item.step(byCount: direction < 0 ? -1 : 1)
     }
-    func jump(_ seconds: Double) { guard !isBusy, !showReview else { return }; cropAdjusting = false; pause(); seek(position + seconds) }
-    func recallStart() { pause(); seek(settings.start) }
+    func jump(_ seconds: Double) { guard !isBusy, !showReview else { return }; cropAdjusting = false; keepingPlayback { pause(); seek(position + seconds) } }
+    func recallStart() { keepingPlayback { pause(); seek(settings.start) } }
     func recallEnd() { pause(); seek(settings.end) }
     func setStart() {
         guard !isBusy, position < settings.end else { status = "Start must be before the end."; return }
@@ -484,16 +502,18 @@ final class EditorModel: ObservableObject {
     func resetRange() { guard !isBusy, let source else { return }; timeInputErrors = [:]; timeInputRevision = UUID(); settings.start = 0; settings.end = source.duration }
     func selectLoop(_ id: UUID, seekToStart: Bool = true) {
         guard !isBusy, !showReview, source != nil, loops.ranges.contains(where: { $0.id == id }) else { return }
-        pause()
-        if loops.selectedID != id {
-            let cached = queueEstimates[id]
-            loops.select(id)
-            clearInputDrafts()
-            applySelectedLoop()
-            queueEstimates[id] = cached
-            estimates = cached ?? [:]
+        keepingPlayback {
+            pause()
+            if loops.selectedID != id {
+                let cached = queueEstimates[id]
+                loops.select(id)
+                clearInputDrafts()
+                applySelectedLoop()
+                queueEstimates[id] = cached
+                estimates = cached ?? [:]
+            }
+            if seekToStart { seek(settings.start) }
         }
-        if seekToStart { seek(settings.start) }
     }
 
     @discardableResult
@@ -518,37 +538,50 @@ final class EditorModel: ObservableObject {
               let index = loops.ranges.firstIndex(where: { $0.id == loops.selectedID }) else { return }
         let destination = index + direction
         guard loops.ranges.indices.contains(destination) else { return }
-        let resume = wantsPlayback
-        selectLoop(loops.ranges[destination].id)
-        // Loop navigation always gives transport a selection-based context.
-        if playbackMode == .whole { playbackMode = .repeatSelection }
-        if resume { togglePlayback() }
+        keepingPlayback {
+            selectLoop(loops.ranges[destination].id)
+            // Loop navigation always gives transport a selection-based context.
+            if playbackMode == .whole { playbackMode = .repeatSelection }
+        }
     }
 
     func addLoop() {
         guard !isBusy, !showReview, source != nil, loops.ranges.count < MovieLoops.maximumCount else { return }
-        pause()
-        guard loops.add(length: defaultLoopLength) else { return }
-        clearInputDrafts(); applySelectedLoop(); seek(settings.start)
+        keepingPlayback {
+            pause()
+            guard loops.add(length: defaultLoopLength) else { return }
+            clearInputDrafts(); applySelectedLoop(); seek(settings.start)
+        }
+    }
+
+    /// Deletes any loop, not just the selected one; the trash buttons on queue cards and loop bars call this.
+    func removeLoop(_ id: UUID) {
+        guard !isBusy, !showReview, loops.ranges.count > 1, loops.ranges.contains(where: { $0.id == id }) else { return }
+        if loops.selectedID != id { selectLoop(id) }
+        removeLoop()
     }
 
     func removeLoop() {
         guard !isBusy, !showReview, loops.ranges.count > 1 else { return }
-        pause()
-        let removedID = loops.selectedID
-        guard loops.removeSelected() else { return }
-        if let removedID { queueInputErrors[removedID] = nil; queueEstimates[removedID] = nil }
-        let selectedID = loops.selectedID
-        let cached = selectedID.flatMap { queueEstimates[$0] }
-        clearInputDrafts(); applySelectedLoop(); seek(settings.start)
-        if let selectedID { queueEstimates[selectedID] = cached; estimates = cached ?? [:] }
+        keepingPlayback {
+            pause()
+            let removedID = loops.selectedID
+            guard loops.removeSelected() else { return }
+            if let removedID { queueInputErrors[removedID] = nil; queueEstimates[removedID] = nil }
+            let selectedID = loops.selectedID
+            let cached = selectedID.flatMap { queueEstimates[$0] }
+            clearInputDrafts(); applySelectedLoop(); seek(settings.start)
+            if let selectedID { queueEstimates[selectedID] = cached; estimates = cached ?? [:] }
+        }
     }
 
     func setLoopLength(_ seconds: Double) {
         guard !isBusy, !showReview, source != nil, seconds == 5 || seconds == 10 else { return }
-        pause(); defaultLoopLength = seconds
-        loops.resizeSelected(to: seconds)
-        clearInputDrafts(); applySelectedLoop()
+        keepingPlayback {
+            pause(); defaultLoopLength = seconds
+            loops.resizeSelected(to: seconds)
+            clearInputDrafts(); applySelectedLoop()
+        }
     }
 
     func beginLoopDrag(_ id: UUID) {
@@ -561,18 +594,24 @@ final class EditorModel: ObservableObject {
         guard !isBusy, !showReview, source != nil else { return }
         guard loops.move(id, originalStart: originalStart, originalEnd: originalEnd, by: delta) else { return }
         applySelectedLoop()
+        seek(settings.start) // the playhead rides on A while a loop is dragged
     }
 
     func dragLoopHandle(start: Bool, original: MovieLoop, by delta: Double) {
         guard !isBusy, !showReview, let source, delta.isFinite,
               loops.selectedID == original.id else { return }
+        let minimum = min(0.001, source.duration)
+        var edit = settings
         if start {
-            moveLoop(original.id, originalStart: original.start, originalEnd: original.end, by: delta)
+            // A trims the loop's start with B held still, and the playhead follows A.
+            edit.start = max(0, min(original.start + delta, original.end - minimum))
+            settings = edit
+            seek(edit.start)
         } else {
-            let minimum = min(0.001, source.duration)
-            var edit = settings
             edit.end = min(source.duration, max(original.end + delta, edit.start + minimum))
             settings = edit
+            // B is exclusive, so show the frame just before it: the last one the loop keeps.
+            seek(max(edit.start, edit.end - minimum))
         }
     }
 
@@ -594,12 +633,14 @@ final class EditorModel: ObservableObject {
 
     func setCropAspectRatio(_ aspect: CropAspectRatio) {
         guard !isBusy, let source else { return }
-        pause(); clearInputDrafts()
-        var edit = settings
-        edit.cropAspectRatio = aspect
-        if aspect != .free { edit.lastLockedCropAspectRatio = aspect }
-        edit.crop = CropGeometry.fitted(edit.crop, aspect: aspect, sourceWidth: source.width, sourceHeight: source.height)
-        settings = edit
+        keepingPlayback {
+            pause(); clearInputDrafts()
+            var edit = settings
+            edit.cropAspectRatio = aspect
+            if aspect != .free { edit.lastLockedCropAspectRatio = aspect }
+            edit.crop = CropGeometry.fitted(edit.crop, aspect: aspect, sourceWidth: source.width, sourceHeight: source.height)
+            settings = edit
+        }
     }
 
     func toggleCropAspectLock() {

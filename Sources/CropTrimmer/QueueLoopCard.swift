@@ -25,25 +25,29 @@ struct QueueLoopCard: View {
                 exportOptions
             } else {
                 Text(edit.color.isIdentity ? "Trim only · \(edit.method.rawValue)" : "Color correction · re-encode")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
                 DisclosureGroup("Advanced export options", isExpanded: $showAdvanced) {
                     exportOptions.padding(.top, 5)
-                }.font(.system(size: 10))
+                }.font(.system(size: 12))
             }
             ForEach((model.queueInputErrors[loop.id] ?? [:]).keys.sorted(), id: \.self) { key in
                 Text(model.queueInputErrors[loop.id]?[key] ?? "")
-                    .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             outputDetails
             footer
         }
-        .font(.system(size: 11)).controlSize(.mini).padding(8)
+        .font(.system(size: 12)).padding(8)
         .background(selected ? Color.yellow.opacity(0.15) : Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(selected ? Color.yellow.opacity(0.35) : .clear))
         .disabled(model.isBusy || model.source == nil)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Loop \(number)" + (selected ? ", selected" : ""))
-        .contextMenu { Button("Set loop to whole movie", action: resetRange) }
+        .contextMenu {
+            Button("Set loop to whole movie", action: resetRange)
+            Button("Delete Loop \(number)", systemImage: "trash", role: .destructive) { model.removeLoop(loop.id) }
+                .disabled(model.loops.ranges.count < 2)
+        }
     }
 
     private var timeRow: some View {
@@ -56,8 +60,12 @@ struct QueueLoopCard: View {
             timeField("End", label: "B", start: false)
             HStack(spacing: 2) {
                 Text("D").foregroundStyle(.secondary)
-                Text(queueSeconds(edit.duration)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+                Text(queueSeconds(edit.duration)).monospacedDigit().lineLimit(1)
             }.help("Duration in seconds").accessibilityLabel("Duration \(queueSeconds(edit.duration)) seconds")
+            Button { model.removeLoop(loop.id) } label: { Image(systemName: "trash") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .disabled(model.loops.ranges.count < 2)
+                .help("Delete Loop \(number)").accessibilityLabel("Delete Loop \(number)")
         }
     }
 
@@ -108,11 +116,11 @@ struct QueueLoopCard: View {
             }.buttonStyle(.plain).help(locked ? "Unlock proportions" : "Lock proportions")
                 .accessibilityLabel("Loop \(number): " + (locked ? "Unlock crop aspect ratio" : "Lock crop aspect ratio"))
             Text("\(edit.crop.width) × \(edit.crop.height)")
-                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+                .monospacedDigit().lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .accessibilityLabel("Crop dimensions \(edit.crop.width) by \(edit.crop.height) pixels")
                 .help("Source pixels; drag crop corners to resize")
-        }.font(.system(size: 10))
+        }.font(.system(size: 12))
     }
 
     private func coordinate(_ title: String, _ key: WritableKeyPath<PixelRect, Int>) -> some View {
@@ -155,11 +163,11 @@ struct QueueLoopCard: View {
                     Text("Subtitles, chapters and attachments are not retained. Automatic trim may re-encode when clean stream copying is unavailable.")
                     Text("Size estimates sample this loop; the final size can differ with motion and detail.")
                     if let restriction = source.encodingRestriction { Text(restriction).foregroundStyle(.orange) }
-                }.font(.caption2).foregroundStyle(.secondary).padding(.top, 4)
-            }.font(.system(size: 10))
+                }.font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 4)
+            }.font(.system(size: 12))
             if source.subtitleCount > 0 || (source.audioCount > 1 && (edit.cropEnabled || !edit.color.isIdentity || edit.method != .fast)) {
                 Text("Some tracks may be omitted; see output details.")
-                    .font(.caption2).foregroundStyle(.orange)
+                    .font(.system(size: 12)).foregroundStyle(.orange)
             }
         }
     }
@@ -171,23 +179,23 @@ struct QueueLoopCard: View {
                 let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
                     trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number)
                     + "." + (proposed?.fileExtension ?? "mp4")
-                Text(filename).font(.system(size: 10)).textSelection(.enabled)
+                Text(filename).font(.system(size: 12)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .help("Planned output filename. An extra number is added if it already exists.")
                 if let proposed {
                     Text(proposed.method == .copy
                          ? "\(source.videoCodec.uppercased()) · stream copy planned"
                          : "H.264 · \(edit.quality.rawValue) · \(source.audioCount > 0 ? "AAC audio" : "no audio")")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
                     if proposed.method == .copy {
                         let bytes = Int64(Double(source.identity.size) * proposed.duration / source.duration)
                         Text("Estimated size ≈ \(byteLabel(bytes))")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
                             .help("Quick estimate from source size and planned duration; final size can differ.")
                     } else {
                         HStack {
                             Text(model.queueEstimates[loop.id]?[edit.quality].map { "Estimated size ≈ " + byteLabel($0) } ?? "Size not estimated")
-                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
                             Spacer(minLength: 2)
                             Button(model.queueEstimates[loop.id] == nil ? "Estimate" : "Refresh") { model.estimateLoop(loop.id) }
                                 .disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
@@ -195,9 +203,9 @@ struct QueueLoopCard: View {
                         }
                     }
                 } else if let error = model.queuePlanErrors[loop.id] {
-                    Text(error).font(.caption2).foregroundStyle(.orange)
+                    Text(error).font(.system(size: 12)).foregroundStyle(.orange)
                 } else {
-                    Text("Checking output encoding and size…").font(.caption2).foregroundStyle(.secondary)
+                    Text("Checking output encoding and size…").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             }
             Button { model.exportLoop(loop.id) } label: {

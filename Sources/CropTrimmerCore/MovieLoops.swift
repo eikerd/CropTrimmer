@@ -39,11 +39,18 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
-    /// New loops prefer the time after the selected loop. Near the end, use an
-    /// unused start position when possible; overlap is allowed and remains editable.
+    /// A new loop starts at the selected loop's out point (B), so pressing + repeatedly chains loops
+    /// end to end. If less than the default length remains, it runs to the end of the movie. Only
+    /// when the selected loop already ends at the movie's end does it fall back to an unused spot;
+    /// overlap is allowed and remains editable.
     @discardableResult public mutating func add(length requestedLength: Double) -> Bool {
         guard ranges.count < Self.maximumCount, sourceDuration > 0 else { return false }
         let length = Self.length(requestedLength, within: sourceDuration)
+        if let out = selected?.end, sourceDuration - out >= Self.minimumLength {
+            let loop = MovieLoop(start: out, end: min(out + length, sourceDuration), settings: selected?.settings ?? EditSettings())
+            ranges.append(loop); selectedID = loop.id
+            return true
+        }
         let latestStart = sourceDuration - length
         var start = min(selected?.end ?? 0, latestStart)
         if ranges.contains(where: { abs($0.start - start) < 0.001 && abs($0.duration - length) < 0.001 }), latestStart > 0 {
@@ -87,15 +94,20 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
-    /// The drag's original range is used on every update, preventing cumulative
-    /// drift and preserving length when a pointer goes beyond the source bounds.
+    /// The shortest a loop gets when it is pushed against the end of the movie.
+    public static let minimumLength = 0.1
+
+    /// The drag's original range is used on every update, preventing cumulative drift. A loop pushed
+    /// past the end of the movie keeps its start and runs to the end, shortening instead of stopping;
+    /// dragging it back restores the original length.
     @discardableResult public mutating func move(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double) -> Bool {
         guard originalStart.isFinite, originalEnd.isFinite, delta.isFinite,
               originalStart >= 0, originalEnd > originalStart, originalEnd <= sourceDuration,
               let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
         let duration = originalEnd - originalStart
-        let start = min(max(0, originalStart + delta), sourceDuration - duration)
-        ranges[index].setRange(start: start, end: start + duration)
+        let latestStart = max(0, sourceDuration - min(duration, Self.minimumLength))
+        let start = min(max(0, originalStart + delta), latestStart)
+        ranges[index].setRange(start: start, end: min(start + duration, sourceDuration))
         selectedID = id
         return true
     }

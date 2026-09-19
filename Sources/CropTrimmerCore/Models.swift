@@ -6,7 +6,11 @@ public enum Quality: String, CaseIterable, Codable, Sendable {
     public var crf: Int { switch self { case .high: 18; case .balanced: 21; case .smaller: 25 } }
 }
 public enum ResolvedMethod: String, Codable, Sendable { case copy = "Fast trim", encode = "Re-encode" }
-public enum PlaybackMode: String, CaseIterable, Codable, Sendable { case repeatSelection = "A–B repeat", whole = "Whole movie", once = "Play selection once" }
+public enum PlaybackMode: String, CaseIterable, Codable, Sendable {
+    case repeatSelection = "A–B repeat", whole = "Whole movie", once = "Play selection once"
+    /// The mode a single click on the transport's mode button moves to, VLC-style.
+    public var next: Self { switch self { case .repeatSelection: .once; case .once: .whole; case .whole: .repeatSelection } }
+}
 
 public struct PixelRect: Codable, Equatable, Sendable {
     public var x: Int; public var y: Int; public var width: Int; public var height: Int

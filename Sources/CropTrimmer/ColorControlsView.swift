@@ -25,7 +25,7 @@ struct ColorControlsView: View {
                 }
             }.padding(.top, 4)
         }
-        .font(.system(size: 10))
+        .font(.system(size: 12))
         .onAppear { expanded = edit.color.enabled && !edit.color.isIdentity }
     }
 
