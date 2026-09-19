@@ -1,15 +1,16 @@
 import XCTest
 
 /// The owner's floor: no text in the app renders below 12 pt. This scans the UI sources for the
-/// ways it has slipped in: explicit point sizes, Apple's small text styles (caption, footnote and
+/// ways it has slipped in: explicit point sizes (`.system`, `Font.system`, `.custom(_:size:)` and
+/// AppKit's `NSFont.systemFont(ofSize:)`, wherever they are built), Apple's small text styles (caption, footnote and
 /// subheadline are 10–11 pt on macOS), small and mini control sizes (11 and 9 pt), and shrink-to-fit.
 /// The scan spans lines, so a modifier chain broken across lines is still seen. A point size set
 /// directly on an `Image(systemName:)` is an icon, not text, and a control size set directly on a
 /// `ProgressView()` sizes a spinner, not text; both are exempt — and nothing else around them is.
 final class MinimumTextSizeTests: XCTestCase {
     private static func regex(_ pattern: String) -> NSRegularExpression { try! NSRegularExpression(pattern: pattern) }
-    static let pointSize = regex(#"\.font\(\s*\.system\(\s*size:\s*(1[01]|[0-9])(\.[0-9]+)?\s*[,)]"#)
-    static let iconReceiver = regex(#"Image\(systemName: "[^"]*"\)\s*$"#)
+    static let pointSize = regex(#"(?:\bFont)?\.(?:system\(\s*size:|custom\(\s*"[^"]*"\s*,\s*(?:fixedSize|size):)\s*(1[01]|[0-9])(\.[0-9]+)?\s*[,)]|\bNSFont\.(?:monospacedDigitS|s)ystemFont\(ofSize:\s*(1[01]|[0-9])(\.[0-9]+)?\s*[,)]"#)
+    static let iconReceiver = regex(#"Image\(systemName: "[^"]*"\)\s*\.font\(\s*$"#)
     static let smallStyles = regex(#"\.font\(\s*\.(caption2?|footnote|subheadline)\b"#)
     static let miniControls = regex(#"\.controlSize\(\s*\.mini\s*\)"#)
     static let smallControls = regex(#"\.controlSize\(\s*\.small\s*\)"#)
@@ -59,6 +60,13 @@ final class MinimumTextSizeTests: XCTestCase {
         XCTAssertEqual(messages(#"HStack { Image(systemName: "film").font(.system(size: 9)); Text("A").font(.system(size: 10)) }"#), ["text below 12 pt"])
         XCTAssertEqual(messages("Text(\"A\")\n    .font(\n        .system(size: 10))"), ["text below 12 pt"])
         XCTAssertEqual(messages(#"Text("A").font(.system(size: 12))"#), [])
+        XCTAssertEqual(messages(#"Text("A").font(.custom("AppFont", size: 10))"#), ["text below 12 pt"])
+        XCTAssertEqual(messages(#"Text("A").font(.custom("AppFont", fixedSize: 11))"#), ["text below 12 pt"])
+        XCTAssertEqual(messages(#"Text("A").font(Font.system(size: 10))"#), ["text below 12 pt"])
+        XCTAssertEqual(messages(#"let small = Font.system(size: 9, weight: .bold)"#), ["text below 12 pt"])
+        XCTAssertEqual(messages(#"field.font = NSFont.systemFont(ofSize: 10)"#), ["text below 12 pt"])
+        XCTAssertEqual(messages(#"Text("A").font(.custom("AppFont", size: 14))"#), [])
+        XCTAssertEqual(messages(#"Image(systemName: "film").font(Font.system(size: 9))"#), [])
         XCTAssertEqual(messages("ProgressView()\n    .controlSize(.small)"), [])
         XCTAssertEqual(messages(#"Text(x).font(.caption).controlSize(.small)"#).count, 2)
         XCTAssertEqual(Self.violations(in: "let a = 1\nText(\"A\")\n    .font(.caption)").first?.line, 3)
