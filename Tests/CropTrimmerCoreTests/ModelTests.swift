@@ -54,4 +54,13 @@ final class ModelTests: XCTestCase {
         settings.start = 7; settings.end = 6
         XCTAssertThrowsError(try settings.validate(source: source))
     }
+
+    func testPlaybackModeButtonCyclesThroughEveryModeOnce() {
+        var mode = PlaybackMode.repeatSelection
+        var seen: [PlaybackMode] = []
+        for _ in PlaybackMode.allCases { seen.append(mode); mode = mode.next }
+        XCTAssertEqual(mode, .repeatSelection)
+        XCTAssertEqual(Set(seen), Set(PlaybackMode.allCases))
+        XCTAssertEqual(PlaybackMode.repeatSelection.next, .once)
+    }
 }

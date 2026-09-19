@@ -13,6 +13,57 @@ final class EditorIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testPlaybackStaysOnThroughEditsAndOpeningAnotherMovie() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-sticky-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var movies: [URL] = []
+        for name in ["First.mp4", "Second.mp4"] {
+            let url = directory.appendingPathComponent(name)
+            let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+            process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "12", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+            process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+            movies.append(url)
+        }
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(movies[0])
+        try await waitUntil { !model.isBusy && model.player.currentItem?.status == .readyToPlay }
+        model.togglePlayback()
+        try await waitUntil { model.isPlaying }
+
+        model.setLoopLength(10)
+        XCTAssertTrue(model.isPlaying, "Changing loop length keeps playing")
+        model.setLoopLength(5)
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertGreaterThanOrEqual(model.position, model.settings.start)
+        XCTAssertLessThan(model.position, model.settings.end, "A shorter loop keeps playing inside its new range")
+        model.addLoop()
+        XCTAssertTrue(model.isPlaying, "Adding a loop keeps playing")
+        model.selectAdjacentLoop(-1)
+        XCTAssertTrue(model.isPlaying, "Switching loops keeps playing")
+        model.removeLoop()
+        XCTAssertTrue(model.isPlaying, "Deleting a loop keeps playing")
+        model.jump(1)
+        XCTAssertTrue(model.isPlaying, "Jumping keeps playing")
+
+        model.open(movies[1])
+        try await waitUntil { !model.isBusy && model.source?.url.lastPathComponent == "Second.mp4" }
+        try await waitUntil { model.isPlaying }
+
+        model.stop()
+        XCTAssertFalse(model.isPlaying, "Stop still stops")
+        model.open(movies[0])
+        try await waitUntil { !model.isBusy && model.source?.url.lastPathComponent == "First.mp4" }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(model.isPlaying, "A stopped player stays stopped when another movie opens")
+    }
+
+    @MainActor
     func testTransportAndIndependentQueueExports() async throws {
         _ = NSApplication.shared
         let ffmpeg = TestTools.ffmpeg
@@ -34,24 +85,37 @@ final class EditorIntegrationTests: XCTestCase {
         model.settings.start = 1; model.settings.end = 3
         let handleOriginal = try XCTUnwrap(model.loops.selected)
         model.beginLoopDrag(handleOriginal.id)
-        model.dragLoopHandle(start: true, original: handleOriginal, by: 2)
-        XCTAssertEqual(model.settings.start, 3)
-        XCTAssertEqual(model.settings.end, 5)
-        XCTAssertEqual(model.settings.duration, 2)
+        // A trims the start with B held still, and the playhead follows A.
+        model.dragLoopHandle(start: true, original: handleOriginal, by: 0.5)
+        XCTAssertEqual(model.settings.start, 1.5)
+        XCTAssertEqual(model.settings.end, 3)
+        XCTAssertEqual(model.position, 1.5)
         // Repeated drag events use the captured range, not the last event's result.
-        model.dragLoopHandle(start: true, original: handleOriginal, by: 3)
-        XCTAssertEqual(model.settings.start, 4)
-        XCTAssertEqual(model.settings.end, 6)
+        model.dragLoopHandle(start: true, original: handleOriginal, by: -0.5)
+        XCTAssertEqual(model.settings.start, 0.5)
+        XCTAssertEqual(model.settings.end, 3)
+        XCTAssertEqual(model.position, 0.5)
         model.dragLoopHandle(start: true, original: handleOriginal, by: 100)
-        XCTAssertEqual(model.settings.start, 10)
-        XCTAssertEqual(model.settings.end, 12)
-        XCTAssertEqual(model.settings.duration, 2)
+        XCTAssertEqual(model.settings.end, 3)
+        XCTAssertLessThan(model.settings.start, 3)
         model.dragLoopHandle(start: true, original: handleOriginal, by: -100)
         XCTAssertEqual(model.settings.start, 0)
-        XCTAssertEqual(model.settings.end, 2)
+        XCTAssertEqual(model.settings.end, 3)
+        // Moving the whole loop by its header keeps the playhead on A, and pushing it
+        // past the end shortens it to the movie's end.
+        let moved = try XCTUnwrap(model.loops.selected)
+        model.moveLoop(moved.id, originalStart: moved.start, originalEnd: moved.end, by: 4)
+        XCTAssertEqual(model.settings.start, 4); XCTAssertEqual(model.settings.end, 7)
+        XCTAssertEqual(model.position, 4)
+        model.moveLoop(moved.id, originalStart: moved.start, originalEnd: moved.end, by: 11)
+        XCTAssertEqual(model.settings.start, 11); XCTAssertEqual(model.settings.end, 12)
+        XCTAssertEqual(model.position, 11)
+        model.moveLoop(moved.id, originalStart: moved.start, originalEnd: moved.end, by: 0)
+        XCTAssertEqual(model.settings.start, 0); XCTAssertEqual(model.settings.end, 3)
         model.dragLoopHandle(start: false, original: try XCTUnwrap(model.loops.selected), by: 1)
         XCTAssertEqual(model.settings.start, 0)
-        XCTAssertEqual(model.settings.end, 3)
+        XCTAssertEqual(model.settings.end, 4)
+        XCTAssertEqual(model.position, 3.999, accuracy: 0.000001, "Dragging B shows the loop's last frame")
         model.settings.start = 1; model.settings.end = 3
         model.recallStart()
         try await waitUntil { abs(model.player.currentTime().seconds - 1) < 0.05 }
@@ -173,6 +237,13 @@ final class EditorIntegrationTests: XCTestCase {
         model.selectAdjacentLoop(1)
         XCTAssertEqual(model.loops.selectedID, third)
         model.removeLoop()
+        XCTAssertEqual(model.loops.ranges.map(\.id), [first, second])
+        let extra = { model.addLoop(); return model.loops.selectedID! }()
+        model.selectLoop(first)
+        model.removeLoop(extra)
+        XCTAssertEqual(model.loops.ranges.map(\.id), [first, second], "Deleting an unselected loop removes that loop, not the selected one")
+        XCTAssertEqual(model.loops.selectedID, first, "and keeps the selection")
+        XCTAssertEqual(model.position, firstSettings.start, "and leaves the playhead where it was")
         model.selectLoop(first)
         XCTAssertEqual(model.settings, firstSettings)
         model.selectLoop(second)
