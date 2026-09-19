@@ -578,6 +578,11 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    func setLoopColor(_ id: UUID, to colorIndex: Int) {
+        guard !isBusy, !showReview else { return }
+        loops.setColor(id, to: colorIndex)
+    }
+
     func setLoopLength(_ seconds: Double) {
         guard !isBusy, !showReview, source != nil, seconds == 5 || seconds == 10 else { return }
         keepingPlayback {

@@ -11,7 +11,7 @@ loose_ends: 2 (listed below)
 supersedes: none
 ---
 
-# One-line transport, loop deletion, drag fixes, sticky playback, 12 pt text — and the approved timeline zoom design
+# One-line transport, loop deletion, drag fixes, sticky playback, 12 pt text, flat colored queue — and the approved timeline zoom design
 
 ## What changed, and why
 
@@ -24,8 +24,14 @@ shows the loop's last kept frame; a loop pushed past the end shortens to the
 movie's end instead of stopping; A trims with B held still. Playback is sticky
 through edits, loop changes and opening another movie. The playhead is a 2 pt
 line with a marker head through the loop bars and filmstrip. No text renders
-below 12 pt, enforced by a source-scanning test. Every visual change was
-rendered and approved in the built app before the commit.
+below 12 pt, enforced by a source-scanning test. Each queue entry is flat and
+always expanded — color correction, crop, export — with the old "Output details"
+text moved into tooltips on the method/quality menus and the Export button. Every
+loop owns a color from a 36-color palette (random on creation, distinct hue from
+the others, changeable from a swatch popover); the color marks its queue panel,
+timeline header and LOOPS-row number, and the selected loop is drawn solid, its
+handles and filmstrip outline in its color. Every visual change was rendered and
+approved in the built app before it was committed.
 
 The owner also asked for a zoomable timeline for very long sources (a 5-second
 loop on a two-hour movie is 0.7 px wide today). The design was prototyped, tried
@@ -33,15 +39,21 @@ by the owner, and approved — see "Next agent".
 
 ## Where it is
 
-- Commits: `28e7925` feat: one-line transport, loop deletion, drag fixes, sticky playback, 12 pt text
+- Commits: `28e7925` feat: one-line transport, loop deletion, drag fixes, sticky
+  playback, 12 pt text; `dc867e0`, `316bdb3`, `0104f12` review fixes (820 pt
+  transport fit, README/Help, delete-in-place, chaining from any remainder,
+  whole-file text-size scan); the last commit adds the flat queue and loop colors.
 - Files that matter: `Sources/CropTrimmer/EditorView.swift` (transport, Filmstrip,
   LoopHeader, playhead), `Sources/CropTrimmer/EditorModel.swift` (`keepingPlayback`,
   `removeLoop(_:)`, drag functions), `Sources/CropTrimmerCore/MovieLoops.swift`
   (`add` chains from B, `move` shortens at the end, `minimumLength`),
   `Sources/CropTrimmerCore/Models.swift` (`PlaybackMode.next`),
+  `Sources/CropTrimmerCore/LoopPalette.swift` and `Sources/CropTrimmer/LoopColors.swift`
+  (palette, `LoopColorSwatch`, `LoopColorGrid`), `Sources/CropTrimmer/QueueLoopCard.swift`
+  (flat layout, `LoopPanel`, tooltip text),
   `Tests/CropTrimmerCoreTests/MinimumTextSizeTests.swift`,
   `docs/prototypes/timeline-zoom.html` (the approved interaction prototype).
-- Verified by: `swift test` — 62 tests, 0 failures. Offscreen renders and the
+- Verified by: `swift test` — 67 tests, 0 failures. Offscreen renders and the
   built app (`scripts/build-app.sh` from this worktree) exercised by the owner.
 
 ## What is deployed
@@ -111,6 +123,12 @@ Nothing. This app has no remote deployment; the local build in this worktree's
   align" and "the Ableton Live way of dragging down on the zoom bar" — timeline
   design approved as prototyped, with all four optional extras.
 - "I want a little bit of a more visible playhead marker … sitting over the clip."
+- "All of these should be expanded. And get rid of all of the overhead … don't
+  have a whole card for output details … Have that be a tooltip" — flat queue.
+- Background variants mocked (panels, alternating bands, loop colors): "I like
+  the colored one … we can color code each loop … a little drop down where we can
+  change the color for, you know, 36 different colors and just like, yeah, they're
+  random." Approved: "Yeah, that looks good."
 - Approved committing the batch and opening the PR (AskUserQuestion, 20:25).
 
 ## Proposed rule changes

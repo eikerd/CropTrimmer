@@ -1,32 +1,30 @@
 import SwiftUI
 import CropTrimmerCore
 
+/// A queue entry's color correction: the enable checkbox is the heading, the sliders are always shown.
 struct ColorControlsView: View {
     @ObservedObject var model: EditorModel
     let loopID: UUID
     let number: Int
-    @State private var expanded = false
 
     private var edit: EditSettings { model.loops.ranges.first { $0.id == loopID }?.settings ?? EditSettings() }
 
     var body: some View {
-        DisclosureGroup("Color correction", isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 5) {
-                Toggle("Enable", isOn: binding(\.enabled)).toggleStyle(.checkbox)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Toggle("Color correction", isOn: binding(\.enabled)).toggleStyle(.checkbox)
+                    .help("Color correction always re-encodes.")
                     .accessibilityLabel("Loop \(number) enable color correction")
-                colorSlider("Black point", key: \.blackPoint, range: 0...max(0, min(0.95, Double(edit.color.whitePoint) - 1.0 / 255.0)))
-                colorSlider("White point", key: \.whitePoint, range: min(1, max(0.05, Double(edit.color.blackPoint) + 1.0 / 255.0))...1)
-                colorSlider("Gamma", key: \.gamma, range: 0.25...4)
-                colorSlider("Saturation", key: \.saturation, range: 0...2)
-                HStack {
-                    Spacer()
-                    Button("Reset") { update { $0.color = ColorSettings() } }
-                        .accessibilityLabel("Reset Loop \(number) color correction")
-                }
-            }.padding(.top, 4)
+                Spacer()
+                Button("Reset") { update { $0.color = ColorSettings() } }
+                    .accessibilityLabel("Reset Loop \(number) color correction")
+            }
+            colorSlider("Black point", key: \.blackPoint, range: 0...max(0, min(0.95, Double(edit.color.whitePoint) - 1.0 / 255.0)))
+            colorSlider("White point", key: \.whitePoint, range: min(1, max(0.05, Double(edit.color.blackPoint) + 1.0 / 255.0))...1)
+            colorSlider("Gamma", key: \.gamma, range: 0.25...4)
+            colorSlider("Saturation", key: \.saturation, range: 0...2)
         }
         .font(.system(size: 12))
-        .onAppear { expanded = edit.color.enabled && !edit.color.isIdentity }
     }
 
     private func colorSlider(_ label: String, key: WritableKeyPath<ColorSettings, Float>, range: ClosedRange<Double>) -> some View {

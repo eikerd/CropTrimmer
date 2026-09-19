@@ -1,12 +1,13 @@
 import SwiftUI
 import CropTrimmerCore
 
-/// A queue entry can be edited without changing which loop is playing.
+/// A queue entry can be edited without changing which loop is playing. It is laid out flat and
+/// always expanded — color correction, crop, export — with the explanatory text in tooltips on the
+/// controls it describes rather than in its own block.
 struct QueueLoopCard: View {
     @ObservedObject var model: EditorModel
     let loop: MovieLoop
     let number: Int
-    @State private var showAdvanced = false
     @State private var cropRevision = UUID()
     @State private var timeRevision = UUID()
 
@@ -16,30 +17,18 @@ struct QueueLoopCard: View {
     private var adjusting: Bool { selected && model.cropAdjusting }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             timeRow
-            cropRow
             ColorControlsView(model: model, loopID: loop.id, number: number)
-            if edit.cropEnabled {
-                cropControls
-                exportOptions
-            } else {
-                Text(edit.color.isIdentity ? "Trim only · \(edit.method.rawValue)" : "Color correction · re-encode")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                DisclosureGroup("Advanced export options", isExpanded: $showAdvanced) {
-                    exportOptions.padding(.top, 5)
-                }.font(.system(size: 12))
-            }
+            cropSection
+            exportSection
             ForEach((model.queueInputErrors[loop.id] ?? [:]).keys.sorted(), id: \.self) { key in
                 Text(model.queueInputErrors[loop.id]?[key] ?? "")
-                    .font(.system(size: 12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            outputDetails
-            footer
         }
-        .font(.system(size: 12)).padding(8)
-        .background(selected ? Color.yellow.opacity(0.15) : Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(selected ? Color.yellow.opacity(0.35) : .clear))
+        .font(.system(size: 12))
+        .modifier(LoopPanel(selected: selected, colorIndex: loop.colorIndex))
         .disabled(model.isBusy || model.source == nil)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Loop \(number)" + (selected ? ", selected" : ""))
@@ -52,6 +41,7 @@ struct QueueLoopCard: View {
 
     private var timeRow: some View {
         HStack(spacing: 4) {
+            LoopColorSwatch(colorIndex: loop.colorIndex, number: number) { model.setLoopColor(loop.id, to: $0) }
             Button { model.selectLoop(loop.id) } label: {
                 Text(String(format: "Loop %02d", number)).fontWeight(.semibold).fixedSize()
             }.buttonStyle(.plain).help("Preview Loop \(number)")
@@ -83,23 +73,27 @@ struct QueueLoopCard: View {
         }
     }
 
-    private var cropRow: some View {
-        HStack(spacing: 6) {
-            Toggle("Crop", isOn: Binding(get: { edit.cropEnabled }, set: { enabled in
-                update { $0.cropEnabled = enabled }
-                if !enabled {
-                    clearCropDrafts()
-                    if adjusting { model.doneCrop() }
+    private var cropSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Toggle("Crop", isOn: Binding(get: { edit.cropEnabled }, set: { enabled in
+                    update { $0.cropEnabled = enabled }
+                    if !enabled {
+                        clearCropDrafts()
+                        if adjusting { model.doneCrop() }
+                    }
+                })).toggleStyle(.checkbox)
+                    .help("Crop selects source pixels and always re-encodes.")
+                Spacer(minLength: 0)
+                if edit.cropEnabled {
+                    Button(adjusting ? "Done" : "Adjust") {
+                        if adjusting { model.doneCrop() }
+                        else { model.selectLoop(loop.id, seekToStart: false); model.beginCrop() }
+                    }.help("Adjust Loop \(number)'s crop in the preview")
+                    Button("Reset", action: resetCrop)
                 }
-            })).toggleStyle(.checkbox)
-            Spacer(minLength: 0)
-            if edit.cropEnabled {
-                Button(adjusting ? "Done" : "Adjust") {
-                    if adjusting { model.doneCrop() }
-                    else { model.selectLoop(loop.id, seekToStart: false); model.beginCrop() }
-                }.help("Adjust Loop \(number)'s crop in the preview")
-                Button("Reset", action: resetCrop)
             }
+            if edit.cropEnabled { cropControls }
         }
     }
 
@@ -116,11 +110,11 @@ struct QueueLoopCard: View {
             }.buttonStyle(.plain).help(locked ? "Unlock proportions" : "Lock proportions")
                 .accessibilityLabel("Loop \(number): " + (locked ? "Unlock crop aspect ratio" : "Lock crop aspect ratio"))
             Text("\(edit.crop.width) × \(edit.crop.height)")
-                .monospacedDigit().lineLimit(1)
+                .monospacedDigit().lineLimit(1).fixedSize()
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .accessibilityLabel("Crop dimensions \(edit.crop.width) by \(edit.crop.height) pixels")
                 .help("Source pixels; drag crop corners to resize")
-        }.font(.system(size: 12))
+        }
     }
 
     private func coordinate(_ title: String, _ key: WritableKeyPath<PixelRect, Int>) -> some View {
@@ -139,79 +133,83 @@ struct QueueLoopCard: View {
         }
     }
 
-    private var exportOptions: some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private var exportSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 5) {
                 Picker("Method", selection: setting(\.method)) {
                     ForEach(ExportMethod.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.labelsHidden().accessibilityLabel("Loop \(number) export method")
+                }.labelsHidden().help(methodHelp).accessibilityLabel("Loop \(number) export method")
                 Picker("Quality", selection: setting(\.quality)) {
                     ForEach(Quality.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.labelsHidden().accessibilityLabel("Loop \(number) encoding quality")
+                }.labelsHidden().help(qualityHelp).accessibilityLabel("Loop \(number) encoding quality")
                     .disabled(!edit.cropEnabled && edit.color.isIdentity && edit.method == .fast)
             }
-
-        }
-    }
-
-    @ViewBuilder private var outputDetails: some View {
-        if let source = model.source {
-            DisclosureGroup("Output details") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Source: \(source.videoCodec), \(source.audioCount) audio track(s), \(source.subtitleCount) subtitle track(s).")
-                    Text(edit.color.isIdentity ? "Fast trim copies video and all audio tracks. Re-encoding uses H.264 video and the first audio track as AAC." : "Color correction requires re-encoding with H.264 video and the first audio track as AAC.")
-                    Text("Subtitles, chapters and attachments are not retained. Automatic trim may re-encode when clean stream copying is unavailable.")
-                    Text("Size estimates sample this loop; the final size can differ with motion and detail.")
-                    if let restriction = source.encodingRestriction { Text(restriction).foregroundStyle(.orange) }
-                }.font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 4)
-            }.font(.system(size: 12))
-            if source.subtitleCount > 0 || (source.audioCount > 1 && (edit.cropEnabled || !edit.color.isIdentity || edit.method != .fast)) {
-                Text("Some tracks may be omitted; see output details.")
-                    .font(.system(size: 12)).foregroundStyle(.orange)
-            }
-        }
-    }
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let source = model.source {
-                let proposed = model.queuePlans[loop.id]
-                let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
-                    trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number)
-                    + "." + (proposed?.fileExtension ?? "mp4")
-                Text(filename).font(.system(size: 12)).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help("Planned output filename. An extra number is added if it already exists.")
-                if let proposed {
-                    Text(proposed.method == .copy
-                         ? "\(source.videoCodec.uppercased()) · stream copy planned"
-                         : "H.264 · \(edit.quality.rawValue) · \(source.audioCount > 0 ? "AAC audio" : "no audio")")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                    if proposed.method == .copy {
-                        let bytes = Int64(Double(source.identity.size) * proposed.duration / source.duration)
-                        Text("Estimated size ≈ \(byteLabel(bytes))")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
-                            .help("Quick estimate from source size and planned duration; final size can differ.")
-                    } else {
-                        HStack {
-                            Text(model.queueEstimates[loop.id]?[edit.quality].map { "Estimated size ≈ " + byteLabel($0) } ?? "Size not estimated")
-                                .font(.system(size: 12)).foregroundStyle(.secondary)
-                            Spacer(minLength: 2)
-                            Button(model.queueEstimates[loop.id] == nil ? "Estimate" : "Refresh") { model.estimateLoop(loop.id) }
-                                .disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
-                                .help("Sample this loop to estimate encoded file size")
-                        }
-                    }
-                } else if let error = model.queuePlanErrors[loop.id] {
-                    Text(error).font(.system(size: 12)).foregroundStyle(.orange)
-                } else {
-                    Text("Checking output encoding and size…").font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack(spacing: 5) {
+                if let size = sizeLabel {
+                    Text(size).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                        .help("Estimates sample this loop; the final size can differ with motion and detail.")
                 }
+                Spacer(minLength: 0)
+                if model.queuePlans[loop.id]?.method == .encode {
+                    Button(model.queueEstimates[loop.id] == nil ? "Estimate" : "Refresh") { model.estimateLoop(loop.id) }
+                        .disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
+                        .help("Sample this loop to estimate its encoded file size")
+                }
+                Button { model.exportLoop(loop.id) } label: { Label("Export Loop \(number)", systemImage: "square.and.arrow.up") }
+                    .disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
+                    .help(exportHelp)
             }
-            Button { model.exportLoop(loop.id) } label: {
-                Label("Export Loop \(number)", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
-            }.disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
+            if let error = model.queuePlanErrors[loop.id] {
+                Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    /// The size beside the Export button: the quick source-size estimate for a stream copy, the sampled
+    /// estimate for an encode once it exists, or "Checking…" while the plan is still being made.
+    private var sizeLabel: String? {
+        guard let source = model.source else { return nil }
+        guard let plan = model.queuePlans[loop.id] else { return model.queuePlanErrors[loop.id] == nil ? "Checking…" : nil }
+        if plan.method == .copy {
+            return "≈ " + byteLabel(Int64(Double(source.identity.size) * plan.duration / source.duration))
+        }
+        return model.queueEstimates[loop.id]?[edit.quality].map { "≈ " + byteLabel($0) }
+    }
+
+    /// What the chosen method means, what is planned right now, and what this movie loses on re-encode.
+    private var methodHelp: String {
+        var lines: [String]
+        switch edit.method {
+        case .automatic: lines = ["Automatic: copies the streams when the planned boundaries land within 0.25 s of A and B, otherwise re-encodes."]
+        case .fast: lines = ["Fast trim: copies video and every audio track without re-encoding; boundaries move to nearby keyframes, and the export fails rather than re-encoding if the copy cannot be verified."]
+        case .accurate: lines = ["Accurate trim: re-encodes for frame-exact boundaries."]
+        }
+        if edit.cropEnabled { lines.append("Crop always re-encodes.") }
+        else if !edit.color.isIdentity { lines.append("Color correction always re-encodes.") }
+        lines.append("Re-encoding writes H.264 video and the first audio track as AAC; subtitles, chapters and attachments are not kept.")
+        if let source = model.source {
+            if let plan = model.queuePlans[loop.id] {
+                lines.append(plan.method == .copy ? "Planned now: \(source.videoCodec.uppercased()) stream copy."
+                                                  : "Planned now: H.264 · \(edit.quality.rawValue) · \(source.audioCount > 0 ? "AAC audio" : "no audio").")
+            }
+            if source.audioCount > 1 || source.subtitleCount > 0 {
+                lines.append("This movie has \(source.audioCount) audio and \(source.subtitleCount) subtitle track(s); only the first audio track survives a re-encode.")
+            }
+            if let restriction = source.encodingRestriction { lines.append(restriction) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private var qualityHelp: String {
+        "\(edit.quality.rawValue): software H.264 at CRF \(edit.quality.crf) with AAC audio at 192 kb/s. Applies only when the export re-encodes."
+    }
+
+    private var exportHelp: String {
+        guard let source = model.source else { return "" }
+        let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
+            trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number)
+            + "." + (model.queuePlans[loop.id]?.fileExtension ?? "mp4")
+        return "Saves \(filename) beside the original. An extra number is added if that name exists."
     }
 
     private func errorBinding(_ key: String) -> Binding<String?> {
@@ -264,5 +262,18 @@ struct QueueLoopCard: View {
         errorBinding("Crop X").wrappedValue = nil
         errorBinding("Crop Y").wrappedValue = nil
         cropRevision = UUID()
+    }
+}
+
+/// Each loop sits on a panel tinted in its own color, like an Ableton clip; the selected loop's
+/// tint is stronger and outlined in the same color.
+struct LoopPanel: ViewModifier {
+    static let spacing: CGFloat = 10
+    let selected: Bool
+    let colorIndex: Int
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, 8).padding(.vertical, 10)
+            .background(LoopColors.fill(colorIndex).opacity(selected ? 0.26 : 0.14), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? LoopColors.onDark(colorIndex) : Color.clear, lineWidth: 1.5))
     }
 }

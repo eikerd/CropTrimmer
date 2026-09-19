@@ -133,16 +133,21 @@ struct EditorView: View {
         Button(action: action) { Image(systemName: symbol).frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).help(label).accessibilityLabel(label)
     }
 
+    /// The selected loop's palette color, for everything that marks the selection.
+    private var selectedColor: Int { model.loops.selected?.colorIndex ?? 0 }
+
     private var timeline: some View {
         VStack(spacing: 10) {
             HStack(spacing: 6) {
                 Text("LOOPS").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
                 ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
+                    let isSelected = loop.id == model.loops.selectedID
                     Button { model.selectLoop(loop.id) } label: {
                         Text(String(index + 1)).fontWeight(.semibold).frame(width: 18)
+                            .foregroundStyle(isSelected ? LoopColors.text(on: loop.colorIndex) : LoopColors.onDark(loop.colorIndex))
                     }
-                    .tint(loop.id == model.loops.selectedID ? .yellow : .gray)
-                    .background(loop.id == model.loops.selectedID ? Color.yellow.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                    .buttonStyle(.borderless).frame(width: 30, height: 24)
+                    .background(isSelected ? LoopColors.fill(loop.colorIndex) : LoopColors.fill(loop.colorIndex).opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
                     .accessibilityLabel("Select Loop \(index + 1)")
                     .accessibilityValue(loop.id == model.loops.selectedID ? "Selected" : "")
                     .help("Loop \(index + 1): \(timeLabel(loop.start)) – \(timeLabel(loop.end))")
@@ -158,7 +163,7 @@ struct EditorView: View {
                 Text("Length").font(.system(size: 12)).foregroundStyle(.secondary)
                 ForEach([5, 10], id: \.self) { seconds in
                     Button("\(seconds)s") { model.setLoopLength(Double(seconds)) }
-                        .tint(abs(model.settings.duration - Double(seconds)) < 0.000001 ? .yellow : .gray)
+                        .tint(abs(model.settings.duration - Double(seconds)) < 0.000001 ? LoopColors.onDark(selectedColor) : .gray)
                         .help("Make this loop \(seconds) seconds; new loops also start at \(seconds) seconds")
                         .accessibilityLabel("Set loop length to \(seconds) seconds")
                 }
@@ -167,7 +172,7 @@ struct EditorView: View {
                 Button("A") { NSEvent.modifierFlags.contains(.shift) ? model.setStart() : model.recallStart() }.help("Recall A · Shift-click to set A (I)")
                 Text(timeLabel(model.settings.start)).monospacedDigit()
                 Spacer()
-                Text("Loop \(model.selectedLoopNumber) · \(timeLabel(model.settings.duration)) selected").foregroundStyle(.yellow).monospacedDigit()
+                Text("Loop \(model.selectedLoopNumber) · \(timeLabel(model.settings.duration)) selected").foregroundStyle(LoopColors.onDark(selectedColor)).monospacedDigit()
                 Spacer()
                 Text(timeLabel(model.settings.end)).monospacedDigit()
                 Button("B") { NSEvent.modifierFlags.contains(.shift) ? model.setEnd() : model.recallEnd() }.help("Recall B · Shift-click to set B (O)")
@@ -262,8 +267,10 @@ struct EditorView: View {
                     .help("Delete selected loop").accessibilityLabel("Delete selected queue loop")
                     .disabled(model.loops.ranges.count < 2)
             }
-            ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
-                QueueLoopCard(model: model, loop: loop, number: index + 1)
+            VStack(alignment: .leading, spacing: LoopPanel.spacing) {
+                ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
+                    QueueLoopCard(model: model, loop: loop, number: index + 1)
+                }
             }
         }
     }
@@ -366,6 +373,7 @@ private struct Filmstrip: View {
     @ObservedObject var model: EditorModel
     @State private var handleOrigin: MovieLoop?
     private let pictureHeight: CGFloat = 62
+    private var selectedColor: Int { model.loops.selected?.colorIndex ?? 0 }
     /// Room above the loop headers for the playhead's marker head.
     static let markerBand: CGFloat = 8
 
@@ -392,7 +400,7 @@ private struct Filmstrip: View {
                     }.frame(width: width, height: pictureHeight).background(.black).clipped().allowsHitTesting(false)
                     Color.black.opacity(0.55).frame(width: max(0, start)).allowsHitTesting(false)
                     Color.black.opacity(0.55).frame(width: max(0, width - end)).offset(x: end).allowsHitTesting(false)
-                    Rectangle().stroke(.yellow, lineWidth: 2)
+                    Rectangle().stroke(LoopColors.fill(selectedColor), lineWidth: 2)
                         .frame(width: max(0, end - start), height: pictureHeight).offset(x: start).allowsHitTesting(false)
 
                     // Only the picture strip scrubs. Headers and endpoint handles
@@ -430,10 +438,10 @@ private struct Filmstrip: View {
     private func handle(_ name: String, at x: CGFloat, width: CGFloat, duration: Double, isStart: Bool, narrow: Bool) -> some View {
         // A short loop on a long source can be only a few screen pixels wide.
         // Split its handle targets vertically so neither handle covers the other.
-        RoundedRectangle(cornerRadius: 2).fill(.yellow)
+        RoundedRectangle(cornerRadius: 2).fill(LoopColors.fill(selectedColor))
             .frame(width: narrow ? 18 : 6, height: narrow ? pictureHeight / 2 - 2 : pictureHeight)
             .overlay {
-                if narrow { Text(isStart ? "A" : "B").font(.system(size: 12, weight: .bold)).foregroundStyle(.black) }
+                if narrow { Text(isStart ? "A" : "B").font(.system(size: 12, weight: .bold)).foregroundStyle(LoopColors.text(on: selectedColor)) }
             }
             .padding(.horizontal, narrow ? 1 : 7).contentShape(Rectangle())
             .offset(x: narrow ? max(0, min(x - 10, width - 20)) : x - 10,
@@ -491,9 +499,9 @@ private struct LoopHeader: View {
             Text(barWidth > 75 ? "Loop \(number)" : String(number)).font(.system(size: 12, weight: .semibold))
         }
         .frame(width: barWidth, height: 20)
-        .foregroundStyle(selected ? Color.black : Color.yellow)
-        .background(selected ? Color.yellow : Color.yellow.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
-        .overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? Color.white : Color.yellow.opacity(selected ? 0 : 0.45), lineWidth: 1))
+        .foregroundStyle(selected ? LoopColors.text(on: loop.colorIndex) : LoopColors.onDark(loop.colorIndex))
+        .background(selected ? LoopColors.fill(loop.colorIndex) : LoopColors.fill(loop.colorIndex).opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? Color.white : LoopColors.fill(loop.colorIndex).opacity(selected ? 0 : 0.55), lineWidth: 1))
         .contentShape(Rectangle())
     }
 
@@ -513,7 +521,7 @@ private struct LoopHeader: View {
             .accessibilityLabel("Move Loop \(number)")
             .accessibilityValue("\(timeLabel(loop.start)) to \(timeLabel(loop.end)), \(timeLabel(loop.duration)) long" + (selected ? ", selected" : ""))
             .accessibilityAdjustableAction { direction in moveByKeyboard(direction == .increment ? 0.1 : -0.1) }
-            .help("Drag this yellow header to move the whole loop. Arrow keys move 0.1s; Shift-arrow moves 1s. Delete removes it. Drag the filmstrip below to scrub.")
+            .help("Drag this header to move the whole loop. Arrow keys move 0.1s; Shift-arrow moves 1s. Delete removes it. Drag the filmstrip below to scrub.")
     }
 
     private var moveGesture: some Gesture {

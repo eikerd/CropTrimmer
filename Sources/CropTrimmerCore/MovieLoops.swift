@@ -1,15 +1,17 @@
 import Foundation
 
-/// A queue entry with its own temporal, crop, and encoding settings.
+/// A queue entry with its own temporal, crop, and encoding settings, and its own color
+/// (a `LoopPalette` index) that marks it in the queue and on the timeline.
 public struct MovieLoop: Identifiable, Equatable, Sendable {
     public let id: UUID
     public fileprivate(set) var settings: EditSettings
+    public fileprivate(set) var colorIndex: Int
     public var start: Double { settings.start }
     public var end: Double { settings.end }
     public var duration: Double { end - start }
 
-    fileprivate init(start: Double, end: Double, settings: EditSettings) {
-        id = UUID(); self.settings = settings
+    fileprivate init(start: Double, end: Double, settings: EditSettings, colorIndex: Int) {
+        id = UUID(); self.settings = settings; self.colorIndex = colorIndex
         self.settings.start = start; self.settings.end = end
     }
     fileprivate mutating func setRange(start: Double, end: Double) {
@@ -25,12 +27,21 @@ public struct MovieLoops: Equatable, Sendable {
     public let sourceDuration: Double
     public var selected: MovieLoop? { ranges.first { $0.id == selectedID } }
 
-    public init(sourceDuration: Double = 0, defaultLength: Double = 5, settings: EditSettings = EditSettings()) {
+    /// `colorIndex` is the first loop's color; nil picks one at random.
+    public init(sourceDuration: Double = 0, defaultLength: Double = 5, settings: EditSettings = EditSettings(), colorIndex: Int? = nil) {
         self.sourceDuration = sourceDuration.isFinite && sourceDuration > 0 ? sourceDuration : 0
         if self.sourceDuration > 0 {
-            let first = MovieLoop(start: 0, end: Self.length(defaultLength, within: self.sourceDuration), settings: settings)
+            let color = colorIndex.flatMap { LoopPalette.isValid($0) ? $0 : nil } ?? LoopPalette.randomIndex(avoiding: [])
+            let first = MovieLoop(start: 0, end: Self.length(defaultLength, within: self.sourceDuration), settings: settings, colorIndex: color)
             ranges = [first]; selectedID = first.id
         }
+    }
+
+    /// Recolors one loop; invalid palette indexes and unknown loops are refused.
+    @discardableResult public mutating func setColor(_ id: UUID, to colorIndex: Int) -> Bool {
+        guard LoopPalette.isValid(colorIndex), let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
+        ranges[index].colorIndex = colorIndex
+        return true
     }
 
     @discardableResult public mutating func select(_ id: UUID) -> Bool {
@@ -43,12 +54,14 @@ public struct MovieLoops: Equatable, Sendable {
     /// end to end. Whatever remains after B — a full length or a fraction of a second — is the new
     /// loop's range, running to the end of the movie when less than a full length is left. Only when
     /// the selected loop already ends at the movie's end (nothing beyond float dust remains) does it
-    /// fall back to an unused spot; overlap is allowed and remains editable.
-    @discardableResult public mutating func add(length requestedLength: Double) -> Bool {
+    /// fall back to an unused spot; overlap is allowed and remains editable. The new loop's color is
+    /// `colorIndex`, or a random one whose hue no other loop uses.
+    @discardableResult public mutating func add(length requestedLength: Double, colorIndex: Int? = nil) -> Bool {
         guard ranges.count < Self.maximumCount, sourceDuration > 0 else { return false }
         let length = Self.length(requestedLength, within: sourceDuration)
+        let color = colorIndex.flatMap { LoopPalette.isValid($0) ? $0 : nil } ?? LoopPalette.randomIndex(avoiding: ranges.map(\.colorIndex))
         if let out = selected?.end, sourceDuration - out > 0.001 {
-            let loop = MovieLoop(start: out, end: min(out + length, sourceDuration), settings: selected?.settings ?? EditSettings())
+            let loop = MovieLoop(start: out, end: min(out + length, sourceDuration), settings: selected?.settings ?? EditSettings(), colorIndex: color)
             ranges.append(loop); selectedID = loop.id
             return true
         }
@@ -61,7 +74,7 @@ public struct MovieLoops: Equatable, Sendable {
                 start = (widest.0 + widest.1) / 2
             }
         }
-        let loop = MovieLoop(start: start, end: start + length, settings: selected?.settings ?? EditSettings())
+        let loop = MovieLoop(start: start, end: start + length, settings: selected?.settings ?? EditSettings(), colorIndex: color)
         ranges.append(loop); selectedID = loop.id
         return true
     }
