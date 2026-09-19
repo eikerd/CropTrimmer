@@ -101,17 +101,20 @@ struct EditorView: View {
             transportButton("Forward 5 seconds", "goforward.5") { model.jump(5) }
             playbackModeButton
             Spacer(minLength: 8)
-            Text(timeLabel(model.position)).font(.system(.body, design: .monospaced)).accessibilityLabel("Playhead \(timeLabel(model.position))")
+            // Fixed widths sum to under the 493 pt this row gets at the 820 pt minimum window; the timestamp
+            // keeps its full width and the spacer absorbs any squeeze.
+            Text(timeLabel(model.position)).font(.system(.body, design: .monospaced)).fixedSize().layoutPriority(1)
+                .accessibilityLabel("Playhead \(timeLabel(model.position))")
             Button { model.muted.toggle() } label: { Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 24, height: 32).contentShape(Rectangle()) }
                 .buttonStyle(.plain).help("Mute monitoring audio").padding(.leading, 6)
-            Slider(value: $model.volume, in: 0...1).frame(width: 80).accessibilityLabel("Monitoring volume")
+            Slider(value: $model.volume, in: 0...1).frame(width: 72).accessibilityLabel("Monitoring volume")
         }.disabled(model.source == nil || model.isBusy)
     }
 
     /// VLC-style loop button: each click cycles the mode, the icon shows the current one, right-click picks directly.
     private var playbackModeButton: some View {
         Button { model.playbackMode = model.playbackMode.next } label: {
-            Image(systemName: modeSymbol(model.playbackMode)).frame(width: 36, height: 32).contentShape(Rectangle())
+            Image(systemName: modeSymbol(model.playbackMode)).frame(width: 32, height: 32).contentShape(Rectangle())
                 .foregroundStyle(model.playbackMode == .repeatSelection ? Color.accentColor : Color.primary)
         }
         .buttonStyle(.plain)
@@ -127,7 +130,7 @@ struct EditorView: View {
     }
 
     private func transportButton(_ label: String, _ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: symbol).frame(width: 36, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).help(label).accessibilityLabel(label)
+        Button(action: action) { Image(systemName: symbol).frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).help(label).accessibilityLabel(label)
     }
 
     private var timeline: some View {
