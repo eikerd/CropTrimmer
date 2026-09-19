@@ -96,7 +96,7 @@ Nothing. This app has no remote deployment; the local build in this worktree's
    - Keys and gestures: Z zoom to selected loop, X whole movie, ⌘+ / ⌘−, pinch,
      two-finger scroll pans, ⌘-scroll zooms.
    - Approved extras: follow the playhead while playing (page the view when it
-     runs off screen), trim by dragging the ends of the yellow bars, double-click
+     runs off screen), trim by dragging the ends of the loop header bars, double-click
      a bar to zoom to it, selecting a loop scrolls it into view.
 3. Keep the 12 pt floor: `MinimumTextSizeTests` fails on point sizes below 12,
    `.caption`/`.footnote`/`.subheadline`, small/mini controls (spinners exempt)
