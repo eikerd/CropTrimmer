@@ -9,8 +9,8 @@ import XCTest
 /// `ProgressView()` sizes a spinner, not text; both are exempt — and nothing else around them is.
 final class MinimumTextSizeTests: XCTestCase {
     private static func regex(_ pattern: String) -> NSRegularExpression { try! NSRegularExpression(pattern: pattern) }
-    static let pointSize = regex(#"(?:\bFont)?\.(?:system\(\s*size:|custom\(\s*"[^"]*"\s*,\s*(?:fixedSize|size):)\s*(1[01]|[0-9])(\.[0-9]+)?\s*[,)]|\bNSFont\.(?:monospacedDigitS|s)ystemFont\(ofSize:\s*(1[01]|[0-9])(\.[0-9]+)?\s*[,)]"#)
-    static let iconReceiver = regex(#"Image\(systemName: "[^"]*"\)\s*\.font\(\s*$"#)
+    static let pointSize = regex(#"(?:\bFont)?\.(?:system\(\s*size:|custom\(\s*[^,]+?,\s*(?:fixedSize|size):)\s*(1[01]|[0-9])(\.[0-9]+)?\s*[,)]|\bNSFont\.(?:monospacedDigitS|s)ystemFont\(ofSize:\s*(1[01]|[0-9])(\.[0-9]+)?\s*[,)]"#)
+    static let iconReceiver = regex(#"Image\(systemName:\s*(?:[^()]|\([^()]*\))*\)\s*\.font\(\s*$"#)
     static let smallStyles = regex(#"\.font\(\s*\.(caption2?|footnote|subheadline)\b"#)
     static let miniControls = regex(#"\.controlSize\(\s*\.mini\s*\)"#)
     static let smallControls = regex(#"\.controlSize\(\s*\.small\s*\)"#)
@@ -67,6 +67,11 @@ final class MinimumTextSizeTests: XCTestCase {
         XCTAssertEqual(messages(#"field.font = NSFont.systemFont(ofSize: 10)"#), ["text below 12 pt"])
         XCTAssertEqual(messages(#"Text("A").font(.custom("AppFont", size: 14))"#), [])
         XCTAssertEqual(messages(#"Image(systemName: "film").font(Font.system(size: 9))"#), [])
+        XCTAssertEqual(messages(#"Image(systemName: symbolName).font(.system(size: 9))"#), [])
+        XCTAssertEqual(messages(#"Image(systemName: modeSymbol(mode)).font(.system(size: 9))"#), [])
+        XCTAssertEqual(messages(#"Image(systemName: name).font(.system(size: 9)); Text("A").font(.system(size: 10))"#), ["text below 12 pt"])
+        XCTAssertEqual(messages(#"Text("A").font(.custom(fontName, size: 10))"#), ["text below 12 pt"])
+        XCTAssertEqual(messages(#"Text("A").font(.custom(theme.fontName, size: 13))"#), [])
         XCTAssertEqual(messages("ProgressView()\n    .controlSize(.small)"), [])
         XCTAssertEqual(messages(#"Text(x).font(.caption).controlSize(.small)"#).count, 2)
         XCTAssertEqual(Self.violations(in: "let a = 1\nText(\"A\")\n    .font(.caption)").first?.line, 3)
