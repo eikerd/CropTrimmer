@@ -1,13 +1,13 @@
 ---
-date: 2026-09-19 23:20 America/Chicago
+date: 2026-09-20 00:15 America/Chicago
 tool: claude-code
 model: claude-fable-5-1
 repo: eikerd/CropTrimmer
 branch: claude/playhead-insert-unlimited-loops
 pr: https://github.com/eikerd/CropTrimmer/pull/12
-state: pr-open
+state: merged
 deployed: no
-loose_ends: 3 (listed below)
+loose_ends: 4 (listed below)
 supersedes: none
 ---
 
@@ -33,6 +33,11 @@ long with its audio intact.
 - Commits:
   - `d3b8d7c` feat: open movies bare, insert the first loop at the playhead, drop the loop cap
   - `b2f00a5` feat: Adobe-style snapping while dragging, and per-loop playback speed
+  - `df5bf5e` fix: export progress by output length, Adjust Crop gating, bare status
+  - `8d42cb4` fix: no ⌘-shortcut past Loop 9, freeze the playhead target during a drag
+  - `b1e59a5` feat: one-row timeline, Apple-style A/B handles, play-all-loops
+  - `a39980b` feat: Settings window with General, File Names and Shortcuts pages
+  - `79b8f88` fix: review rounds 2 and 3, plus an export that could never publish under /private
 - Files that matter:
   - `Sources/CropTrimmerCore/MovieLoops.swift` — `withFirstLoop:`, `add(length:at:settings:)`,
     `snapTargets(excluding:playhead:)`, `snap(start:end:targets:tolerance:)`, uncapped `add`,
@@ -47,11 +52,13 @@ long with its audio intact.
   - `Sources/CropTrimmer/EditorView.swift` — exact-span bars, dashed guide, speed picker,
     `Filmstrip.snapDistance`.
   - `Sources/CropTrimmer/QueueLoopCard.swift` — per-loop Speed row.
-- Verified by: `swift test` — 78 tests, 0 failures. Half speed renders 2 source seconds as 4.00
+- Verified by: `swift test` — 91 tests, 0 failures. Half speed renders 2 source seconds as 4.00
   with ~50 frames (spread, not duplicated); 8× renders 4 seconds as 0.5 with audio kept.
   In the running app on a synthetic 2-minute movie: bare start, `+`×6 stair-step, flush bars,
   last-loop delete back to whole movie, and a loop dragged out to A=33.434 then back landed
-  exactly on 5.000, flush against its neighbour's B.
+  exactly on 5.000, flush against its neighbour's B. Twelve loops added through the menu without
+  the tenth crashing it, play-all rotating with every loop reading as selected, both settings
+  pages driven, and a real export published from the directory whose publish used to fail.
 
 ## What is deployed
 
@@ -61,28 +68,41 @@ so the owner's own running Crop Trimmer was never touched.
 
 ## Loose ends
 
-1. **Worktree still live**: `/Users/ernestoikerd/repos/macos/CropTrimmer-wt-playhead-loops`
-   (branch `claude/playhead-insert-unlimited-loops`, PR #12 open). Remove after merge.
-2. **Another agent's work, untouched**: `/Users/ernestoikerd/repos/macos/CropTrimmer-wt-omacut-keys`
-   (`claude/omacut-hotkeys`, 5 uncommitted files) holds a `PreferencesView.swift` with a General
-   tab and a Shortcuts reference list. It overlaps the settings pages the owner asked for in this
-   session (filename-affecting operations, key bindings) — **that work should land from there, not
-   be rewritten here**. The main checkout is also dirty on `codex/openrouter-settings` (draft PR #10).
-3. **Reviews not finished**: Codex review was still running at handoff; Copilot declined (quota
-   reached). Three completed rounds are still owed before the scorecard and merge.
+1. **Worktree**: `/Users/ernestoikerd/repos/macos/CropTrimmer-wt-playhead-loops` — removed at merge.
+2. **Another session's checkout is still dirty**: the main checkout sits on `codex/openrouter-settings`
+   with 11 uncommitted files and draft [PR #10](https://github.com/eikerd/CropTrimmer/pull/10).
+   Untouched by this session.
+3. **`CropTrimmer-wt-omacut-keys`**: its uncommitted work (PreferencesView, persisted loop length,
+   header focus, arrow-key nudges, ⌘I/⌘⇧O, "?") was **absorbed into this PR with the owner's
+   say-so**, so that worktree's copy is now redundant and its branch `claude/omacut-hotkeys` can be
+   deleted without losing anything. It was not modified.
+4. **Copilot review unavailable** (quota reached for the day). The three rounds were Codex plus two
+   local reviewer agents, which is what the owner authorised in session when asked.
+
+## The bug user testing found
+
+Exporting into any folder under `/private/tmp` or `/private/var` could never publish. It is
+**pre-existing**, not from this branch: `standardizedFileURL` strips a `/private` prefix only once
+the file exists, so the temporary registered before the encode was looked up under a different
+spelling afterwards, failed the ownership check, and was left behind because `discard` missed it
+the same way. Ownership now matches on every spelling, and the destination check compares paths
+rather than URLs — which differ by the trailing slash `deletingLastPathComponent` leaves. Three
+tests cover it, one of them proving a file this process never issued is still refused.
 
 ## Not built, still asked for
 
-- **Settings pages** the owner asked for: filename-affecting operations (which operations alter
-  the export filename) and a key-bindings page that explains and lets people change shortcuts.
-  See loose end 2 — the hotkeys worktree already has the Shortcuts tab started.
+- **Rebinding** shortcuts (the reference list shipped; the owner chose that order).
 - A **verbose control-label mode** remains deferred from an earlier session.
 
 ## Next agent: start here
 
-1. Finish the review rounds on PR #12, write `reports/pr-12.html` from the template, merge,
-   delete the branch and worktree.
-2. Then pick up the settings pages from `CropTrimmer-wt-omacut-keys` rather than starting fresh.
+1. **Rebinding keyboard shortcuts.** The Shortcuts page is a reference list; the owner chose
+   "reference list now, rebinding later" when asked. Rebinding needs a capture UI, storage, and
+   conflict rules, and `EditorModel`'s global key monitor has to read from that store.
+2. **Delete `claude/omacut-hotkeys` and its worktree** — its work is merged here (loose end 3).
+3. The owner has not yet seen the renders sent late in the session: the one-row timeline, the
+   chunky A/B handles, play-all, and the two settings pages. They were committed on the owner's
+   instruction to use judgement while away and send renders; anything they reject is a follow-up.
 
 ## Decided by the owner
 
@@ -100,6 +120,16 @@ so the owner's own running Crop Trimmer was never touched.
 - "these fucking controls all need to be on one line, along with a dropdown of playback speed.
   Stop fucking changing my decisions." — the one-line transport from PR #11 is preserved, and the
   speed menu joined that row rather than starting a second one.
+- "There should be a loop selector button next to all the loops… it just would rotate between
+  just the clips and wouldn't play anything else" and "There should be a visual indicator when all
+  of the clips are selected to play too" — Play all loops, with every loop reading as selected.
+- "This can all be one line if we put all the buttons and controls in the center and leave the AV
+  points with their time on the edges" — the single timeline row.
+- "I hate our clip drag handles for the AB points. They need to be more snappy and… more chunky
+  and grabby. Like Apple." — 16 pt caps with grip lines inside a thick rounded trim frame.
+- "Use this time to just user test and then land the PR" — and, asked before they left: merge on
+  Codex plus local reviewers, absorb the hotkeys worktree, reference list before rebinding, and
+  commit visual work with renders sent for later review.
 - "we should keep Figma updated. We're going to migrate all of our design decisions to Figma…
   make a rule to make sure that that's current" — new rule in eikerd/central PR #4, and the
   Crop Trimmer Figma file's Editor frame was updated in this session (see below).
