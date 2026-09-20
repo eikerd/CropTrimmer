@@ -139,11 +139,13 @@ final class EditorIntegrationTests: XCTestCase {
         model.togglePlayback()
         XCTAssertFalse(model.cropAdjusting)
         try await waitUntil { model.isPlaying && model.position > 1.2 }
-        model.playbackRate = 0.5
+        model.setSpeed(0.5)
         XCTAssertEqual(model.player.rate, 0.5, "A new speed applies at once while playing")
-        model.playbackRate = 3
-        XCTAssertEqual(model.playbackRate, 0.5, "Speeds outside the menu are refused")
-        model.playbackRate = 1
+        XCTAssertEqual(model.loops.selected?.settings.speed, 0.5, "The speed belongs to the loop, so the export carries it")
+        XCTAssertTrue(model.speedIsRendered)
+        model.setSpeed(3)
+        XCTAssertEqual(model.speed, 0.5, "Speeds outside the menu are refused")
+        model.setSpeed(1)
         model.togglePlayback()
         XCTAssertFalse(model.isPlaying)
         model.stop()

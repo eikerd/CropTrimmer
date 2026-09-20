@@ -100,9 +100,12 @@ struct EditorView: View {
                 .disabled(!model.canSelectNextLoop)
             transportButton("Forward 5 seconds", "goforward.5") { model.jump(5) }
             playbackModeButton
-            Picker("Playback speed", selection: $model.playbackRate) {
-                ForEach(EditorModel.playbackRates, id: \.self) { Text(rateLabel($0)).tag($0) }
-            }.labelsHidden().fixedSize().help("Playback speed")
+            Picker("Playback speed", selection: Binding(get: { model.speed }, set: model.setSpeed)) {
+                ForEach(EditSettings.speeds, id: \.self) { Text(EditSettings.speedLabel($0)).tag($0) }
+            }.labelsHidden().fixedSize()
+                .help(model.speedIsRendered
+                      ? "Speed of Loop \(model.selectedLoopNumber) — previewed and rendered into its export"
+                      : "Monitoring speed for the whole movie; nothing is rendered until a loop exists")
             Spacer(minLength: 8)
             // Fixed widths sum to under the 493 pt this row gets at the 820 pt minimum window; the timestamp
             // keeps its full width and the spacer absorbs any squeeze.
@@ -127,8 +130,6 @@ struct EditorView: View {
             Picker("Playback", selection: $model.playbackMode) { ForEach(PlaybackMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.inline)
         }
     }
-
-    private func rateLabel(_ rate: Double) -> String { rate.formatted(.number.precision(.fractionLength(0...2))) + "×" }
 
     private func modeSymbol(_ mode: PlaybackMode) -> String {
         switch mode { case .repeatSelection: "repeat"; case .once: "arrow.right.to.line"; case .whole: "film" }
@@ -420,8 +421,27 @@ private struct Filmstrip: View {
                     .coordinateSpace(name: "filmstrip")
                     .accessibilityElement(children: .contain).accessibilityLabel("Movie timeline")
             }
+            .overlay(alignment: .topLeading) {
+                if let guide = model.snapGuide {
+                    snapGuide(at: min(width, max(0, width * guide / duration)))
+                }
+            }
             .overlay(alignment: .topLeading) { playhead(at: min(width, max(0, width * model.position / duration))) }
         }
+    }
+
+    /// How far a dragged edge may sit from a snap target and still stick, in points.
+    static let snapDistance: CGFloat = 7
+
+    /// The Adobe-style guide: a dashed line down the whole timeline at the edge a drag stuck to.
+    private func snapGuide(at x: CGFloat) -> some View {
+        Rectangle()
+            .fill(.white)
+            .frame(width: 1)
+            .overlay(Rectangle().stroke(style: StrokeStyle(lineWidth: 1, dash: [3, 3])).foregroundStyle(.black.opacity(0.6)))
+            .offset(x: x)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     /// The playhead runs from the marker head down through the loop headers and the picture strip,
@@ -455,8 +475,8 @@ private struct Filmstrip: View {
                 }
                 guard let original = handleOrigin else { return }
                 let delta = value.translation.width / width * duration
-                model.dragLoopHandle(start: isStart, original: original, by: delta)
-            }.onEnded { _ in handleOrigin = nil })
+                model.dragLoopHandle(start: isStart, original: original, by: delta, tolerance: Double(Self.snapDistance / width) * duration)
+            }.onEnded { _ in handleOrigin = nil; model.endLoopDrag() })
             .help(isStart ? "Drag A to change where the loop starts, keeping B fixed." : "Drag B to change where the loop ends, keeping A fixed. The playhead shows the loop's last frame.")
             .accessibilityLabel("\(name) range handle").accessibilityValue(timeLabel(isStart ? model.settings.start : model.settings.end))
             .accessibilityAdjustableAction { direction in
@@ -529,7 +549,7 @@ private struct LoopHeader: View {
             .accessibilityLabel("Move Loop \(number)")
             .accessibilityValue("\(timeLabel(loop.start)) to \(timeLabel(loop.end)), \(timeLabel(loop.duration)) long" + (selected ? ", selected" : ""))
             .accessibilityAdjustableAction { direction in moveByKeyboard(direction == .increment ? 0.1 : -0.1) }
-            .help("Drag this header to move the whole loop. Arrow keys move 0.1s; Shift-arrow moves 1s. Delete removes it. Drag the filmstrip below to scrub.")
+            .help("Drag this header to move the whole loop; it snaps to the other loops' edges, the playhead and the movie's ends, marked by a dashed guide. Arrow keys move 0.1s; Shift-arrow moves 1s. Delete removes it. Drag the filmstrip below to scrub.")
     }
 
     private var moveGesture: some Gesture {
@@ -541,10 +561,11 @@ private struct LoopHeader: View {
                 }
                 guard let original = dragOrigin else { return }
                 let delta = Double(value.translation.width / timelineWidth) * sourceDuration
-                model.moveLoop(loop.id, originalStart: original.start, originalEnd: original.end, by: delta)
+                model.moveLoop(loop.id, originalStart: original.start, originalEnd: original.end, by: delta,
+                               tolerance: Double(Filmstrip.snapDistance / timelineWidth) * sourceDuration)
             }
             .onEnded { value in
-                dragOrigin = nil
+                dragOrigin = nil; model.endLoopDrag()
                 if value.translation.width == 0 && value.translation.height == 0 { model.selectLoop(loop.id) }
             }
     }

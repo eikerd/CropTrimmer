@@ -173,4 +173,48 @@ final class MovieLoopsTests: XCTestCase {
         XCTAssertEqual(loops.ranges.count, 16)
         XCTAssertEqual(loops.ranges.map { $0.start }, (0..<16).map { Double($0) * 5 })
     }
+
+    func testSnapTargetsAreTheOtherLoopsEdgesThePlayheadAndTheMovieEnds() throws {
+        var loops = MovieLoops(sourceDuration: 60, withFirstLoop: false)
+        XCTAssertTrue(loops.add(length: 5, at: 10))
+        let first = try XCTUnwrap(loops.selectedID)
+        XCTAssertTrue(loops.add(length: 5, at: 0))
+        let second = try XCTUnwrap(loops.selectedID)
+        // A loop never snaps to its own edges, or it could never leave them.
+        XCTAssertEqual(loops.snapTargets(excluding: second, playhead: 33), [0, 10, 15, 33, 60])
+        XCTAssertEqual(loops.snapTargets(excluding: first, playhead: 33), [0, 15, 20, 33, 60])
+        // A playhead on an edge, or outside the movie, adds nothing.
+        XCTAssertEqual(loops.snapTargets(excluding: second, playhead: 10), [0, 10, 15, 60])
+        XCTAssertEqual(loops.snapTargets(excluding: second, playhead: -1), [0, 10, 15, 60])
+    }
+
+    func testSnappingPrefersTheNearestEdgeAndReleasesOutsideTheTolerance() throws {
+        let targets: [Double] = [0, 10, 15, 60]
+        // The start edge is 0.2 from 10: the whole loop shifts, keeping its length.
+        let toStart = MovieLoops.snap(start: 9.8, end: 14.8, targets: targets, tolerance: 0.5)
+        XCTAssertEqual(toStart?.start, 10); XCTAssertEqual(toStart?.end, 15); XCTAssertEqual(toStart?.guide, 10)
+        // The end edge is nearer its target than the start edge is to its own.
+        let toEnd = MovieLoops.snap(start: 9.6, end: 15.1, targets: targets, tolerance: 0.5)
+        XCTAssertEqual(toEnd?.guide, 15)
+        XCTAssertEqual(try XCTUnwrap(toEnd).end, 15, accuracy: 0.000000001)
+        XCTAssertEqual(try XCTUnwrap(toEnd).start, 9.5, accuracy: 0.000000001)
+        // Nothing within the tolerance: the drag is left exactly where it is.
+        XCTAssertNil(MovieLoops.snap(start: 30, end: 35, targets: targets, tolerance: 0.5))
+        XCTAssertNil(MovieLoops.snap(start: 9.8, end: 14.8, targets: targets, tolerance: 0))
+    }
+
+    func testMovingWithSnapLandsFlushOnANeighbour() throws {
+        var loops = MovieLoops(sourceDuration: 60, withFirstLoop: false)
+        XCTAssertTrue(loops.add(length: 5, at: 10))
+        XCTAssertTrue(loops.add(length: 5, at: 0))
+        let dragged = try XCTUnwrap(loops.selectedID)
+        let original = try XCTUnwrap(loops.selected)
+        // Dropped 0.2s short of the first loop's B, it lands flush against it.
+        let guide = loops.move(dragged, originalStart: original.start, originalEnd: original.end, by: -0.2, snappingTo: loops.snapTargets(excluding: dragged, playhead: 0), tolerance: 0.5)
+        XCTAssertEqual(guide, 15)
+        XCTAssertEqual(loops.selected?.start, 15); XCTAssertEqual(loops.selected?.end, 20)
+        // Far from everything, the move is untouched and reports no guide.
+        XCTAssertNil(loops.move(dragged, originalStart: original.start, originalEnd: original.end, by: 10, snappingTo: loops.snapTargets(excluding: dragged, playhead: 0), tolerance: 0.5))
+        XCTAssertEqual(loops.selected?.start, 25)
+    }
 }

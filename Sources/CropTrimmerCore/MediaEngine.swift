@@ -73,9 +73,10 @@ public actor MediaEngine {
     public func plan(source: MediaSource, settings: EditSettings) async throws -> ExportPlan {
         try settings.validate(source: source)
         let hasColor = !settings.color.isIdentity
+        let hasSpeed = abs(settings.speed - 1) > 0.000001
         try unchanged(source)
-        if settings.cropEnabled || settings.method == .accurate || hasColor {
-            let reason = hasColor ? "Color correction requires re-encoding." : (settings.cropEnabled ? "Cropping requires re-encoding." : "Accurate trim uses source presentation timing.")
+        if settings.cropEnabled || settings.method == .accurate || hasColor || hasSpeed {
+            let reason = hasSpeed ? "Playing at \(EditSettings.speedLabel(settings.speed)) speed requires re-encoding." : (hasColor ? "Color correction requires re-encoding." : (settings.cropEnabled ? "Cropping requires re-encoding." : "Accurate trim uses source presentation timing."))
             return try encodedPlan(source, settings, reason: reason)
         }
         do {
@@ -130,7 +131,7 @@ public actor MediaEngine {
         var fallback = ""
         if plan.method == .copy {
             do {
-                _ = try await run("ffmpeg", arguments: copyArguments(plan, output: temporaryURL), duration: plan.duration, progress: progress)
+                _ = try await run("ffmpeg", arguments: copyArguments(plan, output: temporaryURL), duration: plan.outputDuration, progress: progress)
                 progress(0.94, "Verifying copied boundaries")
                 let output = try await inspect(temporaryURL)
                 let boundaries = try await verifyCopy(plan, output: output)
@@ -222,9 +223,12 @@ public actor MediaEngine {
     }
 
     private func encodeArguments(_ plan: ExportPlan, output: URL, lutFile: URL? = nil) -> [String] {
+        // -t is an output limit, so at 0.5x two source seconds have to be allowed four output seconds.
         var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", decimal(plan.settings.start), "-i", plan.source.url.path,
-                    "-t", decimal(plan.settings.duration), "-map", "0:V:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1"]
+                    "-t", decimal(plan.settings.outputDuration), "-map", "0:V:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1"]
         var filters: [String] = []
+        let speed = plan.settings.speed
+        if abs(speed - 1) > 0.000001 { filters.append("setpts=PTS/\(decimal(speed))") }
         if let lutFile {
             filters.append("lut3d=file='\(filterEscaped(lutFile.path))':interp=trilinear")
         }
@@ -233,10 +237,25 @@ public actor MediaEngine {
             filters.append("crop=\(c.width):\(c.height):\(c.x):\(c.y)")
         }
         if !filters.isEmpty { args += ["-vf", filters.joined(separator: ",")] }
+        // atempo only takes 0.5…2 per stage, so extreme speeds are reached by chaining stages.
+        if abs(speed - 1) > 0.000001, plan.source.audioCount > 0 {
+            args += ["-af", Self.atempoChain(for: speed).map { "atempo=" + decimal($0) }.joined(separator: ",")]
+        }
         args += ["-c:v", "libx264", "-preset", "medium", "-crf", String(plan.settings.quality.crf), "-pix_fmt", "yuv420p",
                  "-fps_mode", "passthrough", "-enc_time_base", "-1", "-c:a", "aac", "-b:a", "192k", "-metadata:s:v:0", "rotate=0",
                  "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4", output.path]
         return args
+    }
+
+    /// Factors within atempo's 0.5…2 range whose product is `speed`.
+    static func atempoChain(for speed: Double) -> [Double] {
+        guard speed > 0, abs(speed - 1) > 0.000001 else { return [] }
+        var remaining = speed
+        var stages: [Double] = []
+        while remaining > 2.000001 { stages.append(2); remaining /= 2 }
+        while remaining < 0.499999 { stages.append(0.5); remaining /= 0.5 }
+        stages.append(remaining)
+        return stages
     }
 
     private func writeLUTIfNeeded(for plan: ExportPlan, output: URL) throws -> URL? {
@@ -315,8 +334,10 @@ public actor MediaEngine {
               plan.method == .copy || output.rotation == 0 else {
             throw MediaError.failed("The output streams or dimensions do not match the export plan.")
         }
-        let allowance = max(0.1, plan.source.fps > 0 ? 2 / plan.source.fps : 0.1)
-        guard abs(output.duration - plan.duration) <= allowance else {
+        // A sped-up output is measured against its own length, and a slow one gets the same
+        // two-frame allowance stretched the same way, so the check stays exactly as strict.
+        let allowance = max(0.1, plan.source.fps > 0 ? 2 / plan.source.fps : 0.1) / min(1, plan.settings.speed)
+        guard abs(output.duration - plan.outputDuration) <= allowance else {
             throw MediaError.failed("The exported duration differs unexpectedly from the selected range.")
         }
         // Decode complete short outputs, and bounded beginning/end samples of longer ones.

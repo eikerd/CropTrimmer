@@ -142,6 +142,48 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
+    /// Times a dragged loop sticks to, Adobe-style: every other loop's A and B, the playhead, and
+    /// the movie's two ends. Sorted and de-duplicated; a loop never snaps to its own edges, which
+    /// would pin it where it started.
+    public func snapTargets(excluding id: UUID, playhead: Double) -> [Double] {
+        var targets: [Double] = [0, sourceDuration]
+        for loop in ranges where loop.id != id { targets.append(loop.start); targets.append(loop.end) }
+        if playhead.isFinite, playhead > 0, playhead < sourceDuration { targets.append(playhead) }
+        return targets.sorted().reduce(into: []) { result, value in
+            if result.last.map({ abs(value - $0) > 0.000001 }) ?? true { result.append(value) }
+        }
+    }
+
+    /// Slides a dragged range so whichever edge is nearest a target lands exactly on it, keeping the
+    /// range's length. Returns nil when no edge is within `tolerance`, so the drag is left untouched.
+    public static func snap(start: Double, end: Double, targets: [Double], tolerance: Double) -> (start: Double, end: Double, guide: Double)? {
+        guard tolerance > 0, start.isFinite, end.isFinite else { return nil }
+        var best: (distance: Double, shift: Double, guide: Double)?
+        for target in targets {
+            for edge in [start, end] {
+                let distance = abs(target - edge)
+                guard distance <= tolerance, distance < (best?.distance ?? .infinity) else { continue }
+                best = (distance, target - edge, target)
+            }
+        }
+        guard let best else { return nil }
+        return (start + best.shift, end + best.shift, best.guide)
+    }
+
+    /// `move` with snapping. Returns the time a guide should be drawn at, or nil when nothing was
+    /// close enough. Snapping happens before the end-of-movie clamp, so a loop pushed against the
+    /// end still shortens rather than sticking.
+    @discardableResult public mutating func move(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double, snappingTo targets: [Double], tolerance: Double) -> Double? {
+        guard delta.isFinite, originalStart.isFinite, originalEnd.isFinite else { return nil }
+        let snapped = Self.snap(start: originalStart + delta, end: originalEnd + delta, targets: targets, tolerance: tolerance)
+        let effectiveDelta = snapped.map { $0.start - originalStart } ?? delta
+        guard move(id, originalStart: originalStart, originalEnd: originalEnd, by: effectiveDelta) else { return nil }
+        // A snap the clamp then overrode is not a snap; only report a guide the loop actually reached.
+        guard let guide = snapped?.guide, let moved = ranges.first(where: { $0.id == id }),
+              min(abs(moved.start - guide), abs(moved.end - guide)) < 0.000001 else { return nil }
+        return guide
+    }
+
     @discardableResult public mutating func resizeSelected(to requestedLength: Double) -> Bool {
         guard let current = selected else { return false }
         let length = Self.length(requestedLength, within: sourceDuration)

@@ -19,6 +19,7 @@ struct QueueLoopCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             timeRow
+            speedRow
             ColorControlsView(model: model, loopID: loop.id, number: number)
             cropSection
             exportSection
@@ -54,6 +55,19 @@ struct QueueLoopCard: View {
             Button { model.removeLoop(loop.id) } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
                 .help("Delete Loop \(number)").accessibilityLabel("Delete Loop \(number)")
+        }
+    }
+
+    /// The loop's own speed: the same number the preview plays at and the export renders at.
+    private var speedRow: some View {
+        HStack(spacing: 4) {
+            Text("Speed").foregroundStyle(.secondary)
+            Picker("Speed", selection: Binding(get: { edit.speed }, set: { value in update { $0.speed = value } })) {
+                ForEach(EditSettings.speeds, id: \.self) { Text(EditSettings.speedLabel($0)).tag($0) }
+            }.labelsHidden().fixedSize()
+                .accessibilityLabel("Loop \(number) speed")
+                .help("Plays and renders Loop \(number) at this speed. The export runs \(queueSeconds(edit.outputDuration))s.")
+            Spacer(minLength: 0)
         }
     }
 

@@ -67,9 +67,19 @@ public struct EditSettings: Codable, Equatable, Sendable {
     public var cropEnabled = false; public var crop = PixelRect(width: 1920, height: 1080)
     public var method: ExportMethod = .automatic; public var quality: Quality = .balanced
     public var color = ColorSettings()
+    /// How fast this loop plays and renders. 1 is the source's own speed; 0.5 is half speed, which
+    /// takes twice as long to play. Previewing and exporting use the same number.
+    public var speed: Double = 1
     public init() {}
     public init(source: MediaSource) { end = source.duration; crop = PixelRect(width: source.width, height: source.height).constrained(toWidth: source.width, height: source.height) }
-    private enum CodingKeys: String, CodingKey { case start, end, cropAspectRatio, lastLockedCropAspectRatio, cropEnabled, crop, method, quality, color }
+    /// The speeds the menus offer. Anything else is refused by `validate`, so a stored or typed
+    /// value can never reach the encoder.
+    public static let speeds: [Double] = [0.1, 0.125, 0.25, 0.5, 0.75, 1, 1.5, 2, 4, 8]
+    public static func speedLabel(_ speed: Double) -> String {
+        speed.formatted(.number.precision(.fractionLength(0...3))) + "×"
+    }
+
+    private enum CodingKeys: String, CodingKey { case start, end, cropAspectRatio, lastLockedCropAspectRatio, cropEnabled, crop, method, quality, color, speed }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         start = try values.decode(Double.self, forKey: .start)
@@ -81,6 +91,7 @@ public struct EditSettings: Codable, Equatable, Sendable {
         method = try values.decode(ExportMethod.self, forKey: .method)
         quality = try values.decode(Quality.self, forKey: .quality)
         color = try values.decodeIfPresent(ColorSettings.self, forKey: .color) ?? ColorSettings()
+        speed = try values.decodeIfPresent(Double.self, forKey: .speed) ?? 1
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -88,10 +99,16 @@ public struct EditSettings: Codable, Equatable, Sendable {
         try values.encode(cropAspectRatio, forKey: .cropAspectRatio); try values.encode(lastLockedCropAspectRatio, forKey: .lastLockedCropAspectRatio)
         try values.encode(cropEnabled, forKey: .cropEnabled); try values.encode(crop, forKey: .crop)
         try values.encode(method, forKey: .method); try values.encode(quality, forKey: .quality); try values.encode(color, forKey: .color)
+        try values.encode(speed, forKey: .speed)
     }
     public var duration: Double { max(0, end - start) }
+    /// How long the exported movie runs: the source span stretched or compressed by `speed`.
+    public var outputDuration: Double { speed > 0 ? duration / speed : duration }
     public func validate(source: MediaSource) throws {
         guard start.isFinite, end.isFinite, start >= 0, end <= source.duration + 0.001, end > start else { throw MediaError.invalid("Choose a start before the end, within the movie.") }
+        guard Self.speeds.contains(where: { abs($0 - speed) < 0.000001 }) else {
+            throw MediaError.invalid("Choose a speed from the menu, between \(Self.speedLabel(Self.speeds[0])) and \(Self.speedLabel(Self.speeds[Self.speeds.count - 1])).")
+        }
         if cropEnabled {
             guard crop.width >= 2, crop.height >= 2, crop.x >= 0, crop.y >= 0, crop.width <= source.width, crop.height <= source.height, crop.x <= source.width - crop.width, crop.y <= source.height - crop.height,
                   crop.width % 2 == 0, crop.height % 2 == 0, crop.x % 2 == 0, crop.y % 2 == 0 else { throw MediaError.invalid("Crop coordinates and dimensions must be even and inside the source image.") }
@@ -110,7 +127,10 @@ public struct ExportPlan: Sendable {
     }
     public var width: Int { settings.cropEnabled ? settings.crop.width : source.width }
     public var height: Int { settings.cropEnabled ? settings.crop.height : source.height }
+    /// The span taken from the source. `outputDuration` is what the exported file runs for, which
+    /// differs whenever the loop carries a speed.
     public var duration: Double { plannedEnd - plannedStart }
+    public var outputDuration: Double { settings.speed > 0 ? duration / settings.speed : duration }
     public var startShift: Double { plannedStart - settings.start }
     public var endShift: Double { plannedEnd - settings.end }
 }

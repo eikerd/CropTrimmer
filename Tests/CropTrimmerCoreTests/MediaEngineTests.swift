@@ -276,4 +276,35 @@ final class MediaEngineTests: XCTestCase {
         try process.run(); process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw MediaError.failed("Fixture generation failed") }
     }
+
+    func testSpeedForcesEncodingAndChangesTheRenderedLength() async throws {
+        let engine = MediaEngine()
+        let source = try await engine.inspect(fixture())
+        var edit = EditSettings(source: source)
+        edit.start = 0; edit.end = 2; edit.speed = 0.5
+        let plan = try await engine.plan(source: source, settings: edit)
+        XCTAssertEqual(plan.method, .encode, "A speed change cannot be a stream copy")
+        XCTAssertTrue(plan.explanation.lowercased().contains("speed"), plan.explanation)
+        let result = try await engine.export(plan: plan, to: directory.appendingPathComponent("half.mp4")) { _, _ in }
+        let times = try timestamps(result.url)
+        let last = try XCTUnwrap(times.last), first = try XCTUnwrap(times.first)
+        let rendered = last - first
+        XCTAssertEqual(rendered, 4, accuracy: 0.15, "Two seconds at half speed render as four")
+        // The frames are spread, not duplicated: the source's 50 frames still carry the movie.
+        XCTAssertEqual(times.count, 50, accuracy: 2)
+    }
+
+    func testEightTimesSpeedRendersShorterAndKeepsAudio() async throws {
+        let engine = MediaEngine()
+        let url = directory.appendingPathComponent("with-audio.mp4")
+        try ff(["-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "4", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", url.path])
+        let source = try await engine.inspect(url)
+        var edit = EditSettings(source: source)
+        edit.start = 0; edit.end = 4; edit.speed = 8
+        let plan = try await engine.plan(source: source, settings: edit)
+        let result = try await engine.export(plan: plan, to: directory.appendingPathComponent("fast.mp4")) { _, _ in }
+        let probed = try await engine.inspect(result.url)
+        XCTAssertEqual(probed.duration, 0.5, accuracy: 0.15, "Four seconds at 8x render as half a second")
+        XCTAssertEqual(probed.audioCount, 1, "Audio is sped up, not dropped")
+    }
 }
