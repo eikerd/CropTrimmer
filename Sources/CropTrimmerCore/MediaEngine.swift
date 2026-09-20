@@ -290,6 +290,8 @@ public actor MediaEngine {
     }
 
     /// An editor time as an input `-ss`, which FFmpeg measures from the container's start.
+    /// ffprobe reports the container start as the earliest stream start, so the offset is never
+    /// negative in a well-formed file; a malformed one seeks from the beginning rather than failing.
     private func seek(_ source: MediaSource, _ time: Double) -> Double { max(0, time + source.seekOffset) }
 
     private struct Fingerprint { let time: Double; let duration: Double; let hash: String }
@@ -315,8 +317,8 @@ public actor MediaEngine {
     private func verifyCopy(_ plan: ExportPlan, output: MediaSource) async throws -> (Double, Double) {
         let firstOutput = try await fingerprints(output, from: 0, length: min(1, output.duration), origin: output.startTime)
         let lastOutput = try await fingerprints(output, from: max(0, output.duration - 1), length: min(1, output.duration), origin: output.startTime)
-        let firstSource = try await fingerprints(plan.source, from: max(0, plan.plannedStart - 1), length: 3)
-        let lastSource = try await fingerprints(plan.source, from: max(0, plan.plannedEnd - 2), length: 3)
+        let firstSource = try await fingerprints(plan.source, from: max(0, plan.plannedStart - 1), length: 3, origin: plan.source.startTime)
+        let lastSource = try await fingerprints(plan.source, from: max(0, plan.plannedEnd - 2), length: 3, origin: plan.source.startTime)
         guard let first = firstOutput.first, let last = lastOutput.last else { throw MediaError.failed("The copied video has no decodable boundary frames.") }
         let aMatches = firstSource.filter { $0.hash == first.hash }
         let bMatches = lastSource.filter { $0.hash == last.hash }
