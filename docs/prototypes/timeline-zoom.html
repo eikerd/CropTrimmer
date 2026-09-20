@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Timeline zoom prototype</title>
+<style>
+  body { margin: 0; background: #141416; color: #ddd; font: 12px -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; padding: 20px; }
+  .app { background: #1b1b1d; border-radius: 8px; padding: 16px; max-width: 1100px; margin: 0 auto; outline: none; }
+  #stack { position: relative; }
+  #ov { height: 16px; position: relative; background: #000; border-radius: 3px; overflow: hidden; cursor: grab; }
+  #ovwin { position: absolute; top: 0; height: 100%; border: 1px solid #fff; background: rgba(255,255,255,.14); box-sizing: border-box; pointer-events: none; }
+  #ruler { height: 22px; position: relative; margin-top: 6px; cursor: ns-resize; user-select: none; }
+  #lanes { position: relative; margin-top: 4px; }
+  .lane { position: relative; height: 20px; margin-bottom: 4px; background: rgba(255,255,255,.035); border-radius: 3px; }
+  .bar { position: absolute; top: 0; height: 20px; background: rgba(255,204,0,.14); border: 1px solid rgba(255,204,0,.45); border-radius: 3px; box-sizing: border-box; color: #ffcc00; font-weight: 600; font-size: 12px; line-height: 18px; white-space: nowrap; overflow: hidden; text-align: center; cursor: grab; user-select: none; }
+  .bar.sel { background: #ffcc00; color: #000; border-color: #ffcc00; }
+  .bar .e { position: absolute; top: 0; width: 7px; height: 100%; cursor: ew-resize; }
+  .bar .e.l { left: 0; } .bar .e.r { right: 0; }
+  .bar.narrow .e { display: none; }
+  #strip { position: relative; height: 64px; margin-top: 4px; background: #000; overflow: hidden; cursor: crosshair; }
+  .dim { position: absolute; top: 0; height: 100%; background: rgba(0,0,0,.55); pointer-events: none; }
+  #sel { position: absolute; top: 0; height: 100%; border: 2px solid #ffcc00; box-sizing: border-box; pointer-events: none; }
+  .h { position: absolute; top: 0; width: 6px; height: 100%; background: #ffcc00; border-radius: 2px; cursor: ew-resize; margin-left: -3px; }
+  .h.snap, .bar.snap { background: #4da3ff; border-color: #4da3ff; color: #000; box-shadow: 0 0 8px 2px rgba(77,163,255,.6); }
+  #play { position: absolute; top: 0; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.65); pointer-events: none; }
+  #play::before { content: ''; position: absolute; top: 0; left: -5px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid #fff; }
+  #guide { position: absolute; top: 0; width: 1px; height: 100%; background: #4da3ff; box-shadow: 0 0 6px 2px rgba(77,163,255,.7); pointer-events: none; display: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .foot { display: flex; gap: 12px; align-items: center; margin-top: 8px; color: #9a9a9e; font-size: 12px; }
+  .foot b { color: #ddd; font-weight: 500; }
+  button { background: #2a2a2e; color: #ddd; border: 1px solid #3a3a3e; border-radius: 5px; padding: 3px 9px; font-size: 12px; cursor: pointer; }
+  .hint { margin-top: 10px; color: #8a8a8e; font-size: 12px; line-height: 1.7; }
+  kbd { background: #2a2a2e; border: 1px solid #3a3a3e; border-radius: 3px; padding: 0 4px; color: #ddd; font-family: inherit; }
+</style>
+</head>
+<body>
+<div class="app" id="app" tabindex="0">
+  <div id="stack">
+    <div id="ov"><canvas id="ovc"></canvas><div id="ovwin"></div></div>
+    <div id="ruler"><canvas id="rc"></canvas></div>
+    <div id="lanes"></div>
+    <div id="strip">
+      <canvas id="sc"></canvas>
+      <div class="dim" id="dimL"></div><div class="dim" id="dimR"></div>
+      <div id="sel"></div>
+      <div class="h" id="hA"></div><div class="h" id="hB"></div>
+    </div>
+    <div id="guide"></div>
+    <div id="play"></div>
+  </div>
+  <div class="foot">
+    <span id="status"></span>
+    <span style="flex:1"></span>
+    <button id="bz">Z · zoom to loop</button>
+    <button id="bx">X · whole movie</button>
+  </div>
+  <div class="hint">
+    Ruler: drag <kbd>↓</kbd> to zoom in around the cursor, <kbd>↑</kbd> to zoom out, <kbd>←</kbd> <kbd>→</kbd> to scroll · ⌘-scroll or pinch zooms, two-finger scroll pans ·
+    Overview: drag the white window, drag its edges to resize, click elsewhere to jump ·
+    Loop bars: drag to move, drag an edge to trim, double-click to zoom to it · A/B handles trim the selected loop · filmstrip scrubs ·
+    Snap: hold <kbd>⌘</kbd> to override
+  </div>
+</div>
+<script>
+const MOVIE = 7200, FPS = 30, MINDUR = 1, SNAP_PX = 8, ZOOM_K = 0.015;
+const loops = [{a: 612, b: 617}, {a: 617, b: 627}, {a: 1500.4, b: 1505.4}];
+let sel = 0, playhead = 612, view = {start: 0, dur: MOVIE}, snapT = null, W = 800;
+const $ = id => document.getElementById(id);
+const app = $('app'), stack = $('stack'), ov = $('ov'), ovwin = $('ovwin'), ruler = $('ruler'), lanes = $('lanes'), strip = $('strip'), guide = $('guide');
+const ovc = $('ovc'), rc = $('rc'), sc = $('sc');
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const pps = () => W / view.dur, xOf = t => (t - view.start) * pps(), tOf = x => view.start + x / pps();
+function clampView() { view.dur = clamp(view.dur, MINDUR, MOVIE); view.start = clamp(view.start, 0, MOVIE - view.dur); }
+function setZoom(dur, anchorT, anchorX) { view.dur = clamp(dur, MINDUR, MOVIE); view.start = anchorT - anchorX * view.dur / W; clampView(); }
+const pad = n => String(n).padStart(2, '0');
+function fmt(t, dec = 0) {
+  t = Math.max(0, t);
+  const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+  const ss = dec ? s.toFixed(dec).padStart(3 + dec, '0') : pad(Math.floor(s));
+  return (h ? h + ':' + pad(m) : pad(m)) + ':' + ss;
+}
+const hue = t => (t / MOVIE * 1080) % 360;
+function ctx(c) {
+  const r = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * r) || c.height !== Math.round(h * r)) { c.width = Math.round(w * r); c.height = Math.round(h * r); }
+  const g = c.getContext('2d'); g.setTransform(r, 0, 0, r, 0, 0); return g;
+}
+
+function drawOverview() {
+  const g = ctx(ovc), h = ovc.clientHeight, n = 64;
+  for (let i = 0; i < n; i++) { const t = (i + .5) / n * MOVIE; g.fillStyle = `hsl(${hue(t)} 40% 30%)`; g.fillRect(i * W / n, 0, W / n + 1, h); }
+  loops.forEach((l, i) => { g.fillStyle = i === sel ? '#ffcc00' : 'rgba(255,204,0,.6)'; g.fillRect(l.a / MOVIE * W, 0, Math.max(2, (l.b - l.a) / MOVIE * W), h); });
+  g.fillStyle = '#fff'; g.fillRect(playhead / MOVIE * W, 0, 1, h);
+  ovwin.style.left = view.start / MOVIE * W + 'px'; ovwin.style.width = Math.max(4, view.dur / MOVIE * W) + 'px';
+}
+
+const STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+function drawRuler() {
+  const g = ctx(rc), h = rc.clientHeight, p = pps();
+  const major = STEPS.find(s => s * p >= 90) || 3600;
+  const minor = major / 5 * p >= 6 ? major / 5 : (major / 2 * p >= 6 ? major / 2 : 0);
+  const end = view.start + view.dur;
+  g.clearRect(0, 0, W, h);
+  g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(0, h - 1, W, 1);
+  if (minor) { g.fillStyle = 'rgba(255,255,255,.25)'; for (let i = Math.floor(view.start / minor); i * minor <= end; i++) g.fillRect(Math.round(xOf(i * minor)), h - 5, 1, 5); }
+  g.fillStyle = 'rgba(255,255,255,.55)'; g.font = '12px ui-monospace, Menlo, monospace'; g.textBaseline = 'top';
+  for (let i = Math.floor(view.start / major); i * major <= end; i++) { const t = i * major, x = Math.round(xOf(t)); g.fillRect(x, h - 9, 1, 9); g.fillText(fmt(t, major < 1 ? 1 : 0), x + 3, 0); }
+}
+
+const bars = [];
+loops.forEach((l, i) => {
+  const lane = document.createElement('div'); lane.className = 'lane';
+  const bar = document.createElement('div'); bar.className = 'bar';
+  bar.innerHTML = '<span class="e l"></span><span class="lab"></span><span class="e r"></span>';
+  lane.appendChild(bar); lanes.appendChild(lane); bars.push(bar);
+});
+function layoutLanes() {
+  loops.forEach((l, i) => {
+    const bar = bars[i], w = (l.b - l.a) * pps(), vw = Math.max(10, w), x = xOf(l.a) - (vw - w) / 2;
+    bar.style.left = x + 'px'; bar.style.width = vw + 'px';
+    bar.classList.toggle('sel', i === sel); bar.classList.toggle('narrow', vw < 24);
+    bar.querySelector('.lab').textContent = vw > 64 ? 'Loop ' + (i + 1) : (vw > 14 ? String(i + 1) : '');
+  });
+}
+
+function drawStrip() {
+  const g = ctx(sc), h = sc.clientHeight, p = pps();
+  let td = MOVIE / 12; while (td * p > 96 && td > 1 / FPS) td /= 2;
+  const i0 = Math.floor(view.start / td), i1 = Math.ceil((view.start + view.dur) / td);
+  g.font = '12px ui-monospace, Menlo, monospace'; g.textBaseline = 'bottom';
+  for (let i = i0; i < i1; i++) {
+    const t = i * td, x = xOf(t), w = td * p, tm = t + td / 2;
+    g.fillStyle = `hsl(${hue(tm)} 42% ${28 + 8 * Math.sin(tm / 7)}%)`; g.fillRect(x, 0, w, h);
+    g.fillStyle = 'rgba(0,0,0,.35)'; g.beginPath(); g.arc(x + w * (0.5 + 0.3 * Math.sin(tm * 0.9)), h * 0.5, Math.min(w, h) * 0.22, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(x + w - 1, 0, 1, h);
+    if (w >= 56) { g.fillStyle = 'rgba(255,255,255,.75)'; g.fillText(fmt(t, td < 1 ? 1 : 0), x + 3, h - 3); }
+  }
+  if (p >= 90) { g.fillStyle = 'rgba(255,255,255,.22)'; const f = 1 / FPS; for (let i = Math.floor(view.start / f); i * f <= view.start + view.dur; i++) g.fillRect(Math.round(xOf(i * f)), 0, 1, 6); }
+  const l = loops[sel], xa = xOf(l.a), xb = xOf(l.b);
+  $('dimL').style.left = '0'; $('dimL').style.width = clamp(xa, 0, W) + 'px';
+  $('dimR').style.left = clamp(xb, 0, W) + 'px'; $('dimR').style.width = (W - clamp(xb, 0, W)) + 'px';
+  $('sel').style.left = xa + 'px'; $('sel').style.width = Math.max(0, xb - xa) + 'px';
+  $('hA').style.left = xa + 'px'; $('hB').style.left = xb + 'px';
+  $('hA').style.display = xa >= -3 && xa <= W + 3 ? '' : 'none'; $('hB').style.display = xb >= -3 && xb <= W + 3 ? '' : 'none';
+}
+function layoutPlayhead() {
+  const x = xOf(playhead), el = $('play');
+  if (x < 0 || x > W) { el.style.display = 'none'; return; }
+  el.style.display = ''; el.style.left = x + 'px'; el.style.top = ruler.offsetTop + 'px';
+  el.style.height = (strip.offsetTop + strip.offsetHeight - ruler.offsetTop) + 'px';
+}
+
+function layoutGuide() {
+  if (snapT == null) { guide.style.display = 'none'; return; }
+  const x = xOf(snapT); if (x < 0 || x > W) { guide.style.display = 'none'; return; }
+  guide.style.display = ''; guide.style.left = x + 'px'; guide.style.top = ruler.offsetTop + 'px';
+  guide.style.height = (strip.offsetTop + strip.offsetHeight - ruler.offsetTop) + 'px';
+}
+function status() {
+  const l = loops[sel];
+  $('status').innerHTML = `Showing <b>${fmt(view.start, 1)}</b> – <b>${fmt(view.start + view.dur, 1)}</b> · ${fmt(view.dur, 1)} across · Loop ${sel + 1} is <b>${((l.b - l.a) * pps()).toFixed(1)} px</b> wide`;
+}
+function render() { W = stack.clientWidth; drawOverview(); drawRuler(); layoutLanes(); drawStrip(); layoutPlayhead(); layoutGuide(); status(); }
+
+function candidates(exclude) { const c = [0, MOVIE, playhead]; loops.forEach((l, i) => { if (i !== exclude) c.push(l.a, l.b); }); return c; }
+function snap(t, exclude, ev) {
+  if (ev && ev.metaKey) return null;
+  const tol = SNAP_PX / pps(); let best = null, bd = tol;
+  for (const c of candidates(exclude)) { const d = Math.abs(c - t); if (d <= bd) { bd = d; best = c; } }
+  return best;
+}
+function drag(e, onMove, onEnd) {
+  const mv = ev => onMove(ev);
+  const up = ev => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); if (onEnd) onEnd(ev); };
+  window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+}
+
+ruler.addEventListener('mousedown', e => {
+  e.preventDefault(); app.focus();
+  const r = ruler.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY, anchorT = tOf(x0), dur0 = view.dur;
+  drag(e, ev => { setZoom(dur0 * Math.exp(-(ev.clientY - y0) * ZOOM_K), anchorT, ev.clientX - r.left); render(); });
+});
+
+ov.addEventListener('mousedown', e => {
+  e.preventDefault(); app.focus();
+  const r = ov.getBoundingClientRect(), x0 = e.clientX - r.left, y0 = e.clientY;
+  const wl = view.start / MOVIE * W, wr = (view.start + view.dur) / MOVIE * W;
+  const mode = Math.abs(x0 - wl) <= 5 ? 'l' : Math.abs(x0 - wr) <= 5 ? 'r' : (x0 > wl && x0 < wr) ? 'in' : 'out';
+  const v0 = {...view}; let moved = false;
+  drag(e, ev => {
+    const dx = ev.clientX - r.left - x0, dy = ev.clientY - y0;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+    if (mode === 'l') { const ns = clamp(v0.start + dx / W * MOVIE, 0, v0.start + v0.dur - MINDUR); view.dur = v0.start + v0.dur - ns; view.start = ns; }
+    else if (mode === 'r') { view.dur = clamp(v0.dur + dx / W * MOVIE, MINDUR, MOVIE - v0.start); }
+    else { const dur = clamp(v0.dur * Math.exp(-dy * ZOOM_K), MINDUR, MOVIE); view.dur = dur; view.start = v0.start + dx / W * MOVIE + (v0.dur - dur) / 2; }
+    clampView(); render();
+  }, () => { if (!moved && mode === 'out') { view.start = x0 / W * MOVIE - view.dur / 2; clampView(); render(); } });
+});
+
+function trimA(l, l0, d, i, ev) { let a = clamp(l0.a + d, 0, l0.b - 1 / FPS); const s = snap(a, i, ev); if (s != null && s < l0.b - 1 / FPS) { a = s; snapT = s; } l.a = a; playhead = a; }
+function trimB(l, l0, d, i, ev) { let b = clamp(l0.b + d, l0.a + 1 / FPS, MOVIE); const s = snap(b, i, ev); if (s != null && s > l0.a + 1 / FPS) { b = s; snapT = s; } l.b = b; playhead = b - 1 / FPS; }
+
+bars.forEach((bar, i) => {
+  bar.addEventListener('mousedown', e => {
+    e.preventDefault(); e.stopPropagation(); app.focus();
+    sel = i; const l = loops[i], l0 = {...l}, r = lanes.getBoundingClientRect(), x0 = e.clientX - r.left;
+    let zone = 'body';
+    if (!bar.classList.contains('narrow')) { if (e.target.classList.contains('l')) zone = 'a'; else if (e.target.classList.contains('r')) zone = 'b'; }
+    drag(e, ev => {
+      const d = (ev.clientX - r.left - x0) / pps(); snapT = null;
+      if (zone === 'body') {
+        let a = l0.a + d, b = l0.b + d, off = 0;
+        const sa = snap(a, i, ev), sb = snap(b, i, ev);
+        if (sa != null && (sb == null || Math.abs(sa - a) <= Math.abs(sb - b))) { off = sa - a; snapT = sa; }
+        else if (sb != null) { off = sb - b; snapT = sb; }
+        a += off; b += off;
+        const len = l0.b - l0.a; a = clamp(a, 0, MOVIE - Math.min(len, 0.1)); b = Math.min(a + len, MOVIE);
+        l.a = a; l.b = b; playhead = a;
+      } else if (zone === 'a') trimA(l, l0, d, i, ev); else trimB(l, l0, d, i, ev);
+      bar.classList.toggle('snap', snapT != null); render();
+    }, () => { snapT = null; bar.classList.remove('snap'); render(); });
+    render();
+  });
+  bar.addEventListener('dblclick', () => { sel = i; zoomToLoop(); });
+});
+
+['hA', 'hB'].forEach(id => $(id).addEventListener('mousedown', e => {
+  e.preventDefault(); e.stopPropagation(); app.focus();
+  const l = loops[sel], l0 = {...l}, r = strip.getBoundingClientRect(), x0 = e.clientX - r.left, h = $(id);
+  drag(e, ev => {
+    const d = (ev.clientX - r.left - x0) / pps(); snapT = null;
+    if (id === 'hA') trimA(l, l0, d, sel, ev); else trimB(l, l0, d, sel, ev);
+    h.classList.toggle('snap', snapT != null); render();
+  }, () => { snapT = null; h.classList.remove('snap'); render(); });
+}));
+
+strip.addEventListener('mousedown', e => {
+  e.preventDefault(); app.focus();
+  const r = strip.getBoundingClientRect();
+  const scrub = ev => { playhead = clamp(tOf(ev.clientX - r.left), 0, MOVIE); render(); };
+  scrub(e); drag(e, scrub);
+});
+
+function zoomToLoop() { const l = loops[sel], len = l.b - l.a; view.dur = clamp(len / 0.8, MINDUR, MOVIE); view.start = l.a - (view.dur - len) / 2; clampView(); render(); }
+function fit() { view = {start: 0, dur: MOVIE}; render(); }
+$('bz').addEventListener('click', zoomToLoop); $('bx').addEventListener('click', fit);
+app.addEventListener('keydown', e => { if (e.key === 'z') { zoomToLoop(); e.preventDefault(); } if (e.key === 'x') { fit(); e.preventDefault(); } });
+stack.addEventListener('wheel', e => {
+  e.preventDefault(); const r = stack.getBoundingClientRect(), x = e.clientX - r.left;
+  if (e.ctrlKey || e.metaKey) setZoom(view.dur * Math.exp(e.deltaY * 0.01), tOf(x), x);
+  else { view.start += (e.shiftKey ? e.deltaY : e.deltaX) / pps(); clampView(); }
+  render();
+}, {passive: false});
+new ResizeObserver(render).observe(app);
+render();
+</script>
+</body>
+</html>

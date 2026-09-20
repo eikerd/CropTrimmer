@@ -35,9 +35,9 @@ struct EditorView: View {
             Divider()
             HStack {
                 if model.isBusy { ProgressView(value: model.progress).frame(width: 100) }
-                Text(model.status).lineLimit(2).font(.caption).textSelection(.enabled)
+                Text(model.status).lineLimit(2).font(.system(size: 12)).textSelection(.enabled)
                 Spacer()
-                if let source = model.source { Text("\(source.width) × \(source.height) · \(timeLabel(source.duration))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                if let source = model.source { Text("\(source.width) × \(source.height) · \(timeLabel(source.duration))").font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary) }
             }.padding(.horizontal, 12).frame(minHeight: 32)
         }
         .background(Color(red: 0.105, green: 0.105, blue: 0.115))
@@ -95,73 +95,123 @@ struct EditorView: View {
     }
 
     private var transport: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 6) {
-                transportButton("Back 5 seconds", "gobackward.5") { model.jump(-5) }
-                transportButton("Previous loop", "backward.end") { model.selectAdjacentLoop(-1) }
-                    .disabled(!model.canSelectPreviousLoop)
-                transportButton(model.isPlaying ? "Pause" : "Play", model.isPlaying ? "pause.fill" : "play.fill", action: model.togglePlayback)
-                transportButton("Stop", "stop.fill", action: model.stop)
-                transportButton("Next loop", "forward.end") { model.selectAdjacentLoop(1) }
-                    .disabled(!model.canSelectNextLoop)
-                transportButton("Forward 5 seconds", "goforward.5") { model.jump(5) }
-                Spacer(minLength: 0)
-                Text(timeLabel(model.position)).font(.system(.body, design: .monospaced)).accessibilityLabel("Playhead \(timeLabel(model.position))")
-            }
-            HStack {
-                Picker("Playback", selection: $model.playbackMode) { ForEach(PlaybackMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden().frame(maxWidth: 180)
-                Spacer()
-                Button { model.muted.toggle() } label: { Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.wave.2.fill") }.buttonStyle(.plain).help("Mute monitoring audio")
-                Slider(value: $model.volume, in: 0...1).frame(width: 80).accessibilityLabel("Monitoring volume")
-            }
+        HStack(spacing: 6) {
+            transportButton("Back 5 seconds", "gobackward.5") { model.jump(-5) }
+            transportButton("Previous loop", "backward.end") { model.selectAdjacentLoop(-1) }
+                .disabled(!model.canSelectPreviousLoop)
+            transportButton(model.isPlaying ? "Pause" : "Play", model.isPlaying ? "pause.fill" : "play.fill", action: model.togglePlayback)
+            transportButton("Stop", "stop.fill", action: model.stop)
+            transportButton("Next loop", "forward.end") { model.selectAdjacentLoop(1) }
+                .disabled(!model.canSelectNextLoop)
+            transportButton("Forward 5 seconds", "goforward.5") { model.jump(5) }
+            playbackModeButton
+            Picker("Playback speed", selection: Binding(get: { model.speed }, set: model.setSpeed)) {
+                ForEach(EditSettings.speeds, id: \.self) { Text(EditSettings.speedLabel($0)).tag($0) }
+            }.labelsHidden().fixedSize()
+                .help(model.speedIsRendered
+                      ? "Speed of Loop \(model.selectedLoopNumber) — previewed and rendered into its export"
+                      : "Monitoring speed for the whole movie; nothing is rendered until a loop exists")
+            Spacer(minLength: 8)
+            // Fixed widths sum to under the 493 pt this row gets at the 820 pt minimum window; the timestamp
+            // keeps its full width and the spacer absorbs any squeeze.
+            Text(timeLabel(model.position)).font(.system(.body, design: .monospaced)).fixedSize().layoutPriority(1)
+                .accessibilityLabel("Playhead \(timeLabel(model.position))")
+            Button { model.muted.toggle() } label: { Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 24, height: 32).contentShape(Rectangle()) }
+                .buttonStyle(.plain).help("Mute monitoring audio").padding(.leading, 6)
+            Slider(value: $model.volume, in: 0...1).frame(width: 72).accessibilityLabel("Monitoring volume")
         }.disabled(model.source == nil || model.isBusy)
     }
 
-    private func transportButton(_ label: String, _ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: symbol).frame(width: 36, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).help(label).accessibilityLabel(label)
+    /// VLC-style loop button: each click cycles the mode, the icon shows the current one, right-click picks directly.
+    private var playbackModeButton: some View {
+        Button { model.playbackMode = model.playbackMode.next } label: {
+            Image(systemName: modeSymbol(model.playbackMode)).frame(width: 32, height: 32).contentShape(Rectangle())
+                .foregroundStyle(model.playbackMode == .repeatSelection ? Color.accentColor : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .help("\(model.playbackMode.rawValue) — click for \(model.playbackMode.next.rawValue)")
+        .accessibilityLabel("Playback mode").accessibilityValue(model.playbackMode.rawValue)
+        .contextMenu {
+            Picker("Playback", selection: $model.playbackMode) { ForEach(PlaybackMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.inline)
+        }
     }
+
+    private func modeSymbol(_ mode: PlaybackMode) -> String {
+        switch mode {
+        case .repeatSelection: "repeat"
+        case .once: "arrow.right.to.line"
+        case .allLoops: "play.square.stack"
+        case .whole: "film"
+        }
+    }
+
+    private func transportButton(_ label: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol).frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).help(label).accessibilityLabel(label)
+    }
+
+    /// Everything that is a control rather than an endpoint: the loop chips, add and delete, and
+    /// the length presets. Centred between the A and B edges.
+    private var loopControls: some View {
+        HStack(spacing: 6) {
+            if model.loops.ranges.isEmpty {
+                Text("Whole movie").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
+                let isSelected = loop.id == model.loops.selectedID || model.playsAllLoops
+                Button { model.selectLoop(loop.id) } label: {
+                    Text(String(index + 1)).fontWeight(.semibold).frame(width: 18)
+                        .foregroundStyle(isSelected ? LoopColors.text(on: loop.colorIndex) : LoopColors.onDark(loop.colorIndex))
+                }
+                .buttonStyle(.borderless).frame(width: 30, height: 24)
+                .background(isSelected ? LoopColors.fill(loop.colorIndex) : LoopColors.fill(loop.colorIndex).opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
+                .accessibilityLabel("Select Loop \(index + 1)")
+                .accessibilityValue(isSelected ? "Selected" : "")
+                .help("Loop \(index + 1): \(timeLabel(loop.start)) – \(timeLabel(loop.end))" + (isSelected ? " · \(timeLabel(loop.duration)) selected" : ""))
+            }
+            Button(action: model.addLoop) { Image(systemName: "plus") }
+                .help(model.loops.ranges.isEmpty ? "Add a \(Int(model.defaultLoopLength))-second loop starting at the playhead" : "Add a \(Int(model.defaultLoopLength))-second loop starting at the selected loop's B")
+                .accessibilityLabel("Add loop")
+            Button(action: model.removeLoop) { Image(systemName: "trash") }
+                .disabled(model.loops.ranges.isEmpty)
+                .help("Delete selected loop").accessibilityLabel("Delete selected loop")
+            Button(action: model.playAllLoops) { Image(systemName: "play.square.stack") }
+                .disabled(model.loops.ranges.isEmpty)
+                .tint(model.playsAllLoops ? LoopColors.onDark(selectedColor) : .gray)
+                .help("Play every loop in turn, each at its own speed, and nothing in between")
+                .accessibilityLabel("Play all loops")
+                .accessibilityValue(model.playsAllLoops ? "On" : "Off")
+            Divider().frame(height: 16).padding(.horizontal, 2)
+            ForEach([5, 10], id: \.self) { seconds in
+                Button("\(seconds)s") { model.setLoopLength(Double(seconds)) }
+                    .tint(abs(model.settings.duration - Double(seconds)) < 0.000001 ? LoopColors.onDark(selectedColor) : .gray)
+                    .disabled(model.loops.ranges.isEmpty)
+                    .help("Make this loop \(seconds) seconds; new loops also start at \(seconds) seconds")
+                    .accessibilityLabel("Set loop length to \(seconds) seconds")
+            }
+        }
+    }
+
+    /// The selected loop's palette color, for everything that marks the selection.
+    private var selectedColor: Int { model.loops.selected?.colorIndex ?? 0 }
 
     private var timeline: some View {
         VStack(spacing: 10) {
+            // One row: A and its time hold the left edge, B and its time the right, and every
+            // control sits in the middle. The two edge groups are the same width, so the centre
+            // group really is centred.
             HStack(spacing: 6) {
-                Text("LOOPS").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
-                    Button { model.selectLoop(loop.id) } label: {
-                        Text(String(index + 1)).fontWeight(.semibold).frame(width: 18)
-                    }
-                    .tint(loop.id == model.loops.selectedID ? .yellow : .gray)
-                    .background(loop.id == model.loops.selectedID ? Color.yellow.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
-                    .accessibilityLabel("Select Loop \(index + 1)")
-                    .accessibilityValue(loop.id == model.loops.selectedID ? "Selected" : "")
-                    .help("Loop \(index + 1): \(timeLabel(loop.start)) – \(timeLabel(loop.end))")
-                }
-                Button(action: model.addLoop) { Image(systemName: "plus") }
-                    .disabled(model.loops.ranges.count >= MovieLoops.maximumCount)
-                    .help("Add a \(Int(model.defaultLoopLength))-second loop, up to three loops")
-                    .accessibilityLabel("Add loop")
-                Button(action: model.removeLoop) { Image(systemName: "minus") }
-                    .disabled(model.loops.ranges.count < 2)
-                    .help("Remove selected loop").accessibilityLabel("Remove selected loop")
-                Spacer(minLength: 6)
-                Text("Length").font(.caption).foregroundStyle(.secondary)
-                ForEach([5, 10], id: \.self) { seconds in
-                    Button("\(seconds)s") { model.setLoopLength(Double(seconds)) }
-                        .tint(abs(model.settings.duration - Double(seconds)) < 0.000001 ? .yellow : .gray)
-                        .help("Make this loop \(seconds) seconds; new loops also start at \(seconds) seconds")
-                        .accessibilityLabel("Set loop length to \(seconds) seconds")
-                }
-            }.controlSize(.small)
-            HStack {
-                Button("A") { NSEvent.modifierFlags.contains(.shift) ? model.setStart() : model.recallStart() }.help("Recall A · Shift-click to set A (I)")
-                Text(timeLabel(model.settings.start)).monospacedDigit()
-                Spacer()
-                Text("Loop \(model.selectedLoopNumber) · \(timeLabel(model.settings.duration)) selected").foregroundStyle(.yellow).monospacedDigit()
-                Spacer()
-                Text(timeLabel(model.settings.end)).monospacedDigit()
-                Button("B") { NSEvent.modifierFlags.contains(.shift) ? model.setEnd() : model.recallEnd() }.help("Recall B · Shift-click to set B (O)")
-            }.font(.caption)
-            Filmstrip(model: model).frame(height: CGFloat(max(1, model.loops.ranges.count)) * 24 + 66).id(model.source?.id)
-            HStack { Text("00:00.000"); Spacer(); Text("Header moves loop · Filmstrip scrubs"); Spacer(); Text(timeLabel(model.source?.duration ?? 0)) }.font(.caption2).foregroundStyle(.secondary)
+                Button("A") { NSEvent.modifierFlags.contains(.shift) ? model.setStart() : model.recallStart() }
+                    .help("Recall A · Shift-click to set A (I)")
+                Text(timeLabel(model.settings.start)).monospacedDigit().font(.system(size: 12))
+                Spacer(minLength: 8)
+                loopControls
+                Spacer(minLength: 8)
+                Text(timeLabel(model.settings.end)).monospacedDigit().font(.system(size: 12))
+                Button("B") { NSEvent.modifierFlags.contains(.shift) ? model.setEnd() : model.recallEnd() }
+                    .help("Recall B · Shift-click to set B (O)")
+            }
+            Filmstrip(model: model).frame(height: CGFloat(max(1, model.loops.ranges.count)) * 24 + 66 + Filmstrip.markerBand).id(model.source?.id)
+            HStack { Text("00:00.000"); Spacer(); Text("Header moves loop · Filmstrip scrubs"); Spacer(); Text(timeLabel(model.source?.duration ?? 0)) }.font(.system(size: 12)).foregroundStyle(.secondary)
         }.disabled(model.source == nil || model.isBusy)
     }
 
@@ -182,7 +232,7 @@ struct EditorView: View {
                 else {
                     Button("Export Queue (\(model.loops.ranges.count))", action: model.exportQueue)
                         .frame(maxWidth: .infinity).buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(model.source == nil || model.cropAdjusting || model.hasInputErrors)
+                        .disabled(model.source == nil || model.loops.ranges.isEmpty || model.cropAdjusting || model.hasInputErrors)
                 }
             }.padding(16)
         }.background(Color.white.opacity(0.035))
@@ -235,6 +285,8 @@ struct EditorView: View {
                         .help("Put the sample name in the field above")
                         .disabled(filenamePlayground.isEmpty)
                     }
+                    Text("Renames the original file in its current folder.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
                     HStack {
                         Button("Cancel", action: cancelFilenameEdit)
                         Spacer()
@@ -252,7 +304,7 @@ struct EditorView: View {
                     }
                 }
                 Text("\(byteLabel(source.identity.size)) · \(source.videoCodec.uppercased())")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
                     .accessibilityLabel("Original file: \(byteLabel(source.identity.size)), \(source.videoCodec) video")
             }
         }
@@ -301,13 +353,14 @@ struct EditorView: View {
                 Spacer()
                 Button(action: model.addLoop) { Image(systemName: "plus") }
                     .accessibilityLabel("Add queue loop")
-                    .disabled(model.loops.ranges.count >= MovieLoops.maximumCount)
-                Button(action: model.removeLoop) { Image(systemName: "minus") }
-                    .accessibilityLabel("Remove queue loop")
-                    .disabled(model.loops.ranges.count < 2)
+                Button(action: model.removeLoop) { Image(systemName: "trash") }
+                    .help("Delete selected loop").accessibilityLabel("Delete selected queue loop")
+                    .disabled(model.loops.ranges.isEmpty)
             }
-            ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
-                QueueLoopCard(model: model, loop: loop, number: index + 1)
+            VStack(alignment: .leading, spacing: LoopPanel.spacing) {
+                ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
+                    QueueLoopCard(model: model, loop: loop, number: index + 1)
+                }
             }
         }
     }
@@ -392,7 +445,7 @@ struct EditorView: View {
     }
 
     private func sectionTitle(_ title: String, _ symbol: String) -> some View {
-        Label(title, systemImage: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+        Label(title, systemImage: symbol).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
     }
 }
 
@@ -400,6 +453,9 @@ private struct Filmstrip: View {
     @ObservedObject var model: EditorModel
     @State private var handleOrigin: MovieLoop?
     private let pictureHeight: CGFloat = 62
+    private var selectedColor: Int { model.loops.selected?.colorIndex ?? 0 }
+    /// Room above the loop headers for the playhead's marker head.
+    static let markerBand: CGFloat = 8
 
     var body: some View {
         GeometryReader { geometry in
@@ -413,7 +469,7 @@ private struct Filmstrip: View {
                         LoopHeader(model: model, loop: loop, number: index + 1, timelineWidth: width, sourceDuration: duration)
                     }
                     if model.loops.ranges.isEmpty { Color.clear.frame(height: 20) }
-                }.padding(.bottom, 4)
+                }.padding(.top, Self.markerBand).padding(.bottom, 4)
 
                 ZStack(alignment: .leading) {
                     HStack(spacing: 1) {
@@ -424,8 +480,13 @@ private struct Filmstrip: View {
                     }.frame(width: width, height: pictureHeight).background(.black).clipped().allowsHitTesting(false)
                     Color.black.opacity(0.55).frame(width: max(0, start)).allowsHitTesting(false)
                     Color.black.opacity(0.55).frame(width: max(0, width - end)).offset(x: end).allowsHitTesting(false)
-                    Rectangle().stroke(.yellow, lineWidth: 2)
-                        .frame(width: max(0, end - start), height: pictureHeight).offset(x: start).allowsHitTesting(false)
+                    // The Apple trim look: a thick rounded frame around the kept range, with the
+                    // grab ends drawn as part of it rather than as separate slivers.
+                    RoundedRectangle(cornerRadius: Self.handleRadius)
+                        .strokeBorder(LoopColors.fill(selectedColor), lineWidth: 3)
+                        .frame(width: max(Self.handleWidth * 2, end - start), height: pictureHeight)
+                        .offset(x: min(start, width - max(Self.handleWidth * 2, end - start)))
+                        .allowsHitTesting(false)
 
                     // Only the picture strip scrubs. Headers and endpoint handles
                     // own separate gestures; there is no parent drag recognizer.
@@ -435,44 +496,104 @@ private struct Filmstrip: View {
                             model.seek(max(0, min(duration, value.location.x / width * duration)))
                         })
                         .accessibilityLabel("Scrub movie")
-                    Rectangle().fill(.white).frame(width: 1.5)
-                        .offset(x: min(width, max(0, width * model.position / duration))).allowsHitTesting(false)
                     handle("Start", at: start, width: width, duration: duration, isStart: true, narrow: end - start < 24)
                     handle("End", at: end, width: width, duration: duration, isStart: false, narrow: end - start < 24)
                 }.frame(height: pictureHeight)
                     .coordinateSpace(name: "filmstrip")
                     .accessibilityElement(children: .contain).accessibilityLabel("Movie timeline")
             }
+            .overlay(alignment: .topLeading) {
+                if let guide = model.snapGuide {
+                    snapGuide(at: min(width, max(0, width * guide / duration)))
+                }
+            }
+            .overlay(alignment: .topLeading) { playhead(at: min(width, max(0, width * model.position / duration))) }
         }
     }
-    private func handle(_ name: String, at x: CGFloat, width: CGFloat, duration: Double, isStart: Bool, narrow: Bool) -> some View {
-        // A short loop on a long source can be only a few screen pixels wide.
-        // Split its handle targets vertically so neither handle covers the other.
-        RoundedRectangle(cornerRadius: 2).fill(.yellow)
-            .frame(width: narrow ? 18 : 6, height: narrow ? pictureHeight / 2 - 2 : pictureHeight)
-            .overlay {
-                if narrow { Text(isStart ? "A" : "B").font(.system(size: 9, weight: .bold)).foregroundStyle(.black) }
-            }
-            .padding(.horizontal, narrow ? 1 : 7).contentShape(Rectangle())
-            .offset(x: narrow ? max(0, min(x - 10, width - 20)) : x - 10,
-                    y: narrow ? (isStart ? -pictureHeight / 4 : pictureHeight / 4) : 0)
-            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("filmstrip")).onChanged { value in
-                if handleOrigin == nil, let loop = model.loops.selected {
-                    handleOrigin = loop; model.beginLoopDrag(loop.id)
-                }
-                guard let original = handleOrigin else { return }
-                let delta = value.translation.width / width * duration
-                model.dragLoopHandle(start: isStart, original: original, by: delta)
-            }.onEnded { _ in handleOrigin = nil })
-            .help(isStart ? "Drag A to reposition the loop, keeping its length. B moves with it." : "Drag B to change the loop length, keeping A fixed.")
-            .accessibilityLabel("\(name) range handle").accessibilityValue(timeLabel(isStart ? model.settings.start : model.settings.end))
-            .accessibilityAdjustableAction { direction in
-                guard let original = model.loops.selected else { return }
-                model.beginLoopDrag(original.id)
-                let delta = direction == .increment ? 0.1 : -0.1
-                model.dragLoopHandle(start: isStart, original: original, by: delta)
-            }
+
+    /// How far a dragged edge may sit from a snap target and still stick, in points.
+    static let snapDistance: CGFloat = 7
+
+    /// The Adobe-style guide: a dashed line down the whole timeline at the edge a drag stuck to.
+    private func snapGuide(at x: CGFloat) -> some View {
+        Rectangle()
+            .fill(.white)
+            .frame(width: 1)
+            .overlay(Rectangle().stroke(style: StrokeStyle(lineWidth: 1, dash: [3, 3])).foregroundStyle(.black.opacity(0.6)))
+            .offset(x: x)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
+
+    /// The playhead runs from the marker head down through the loop headers and the picture strip,
+    /// so the current frame reads against the loops as well as the filmstrip. It never takes hits.
+    private func playhead(at x: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            Image(systemName: "arrowtriangle.down.fill").font(.system(size: 9)).frame(height: Self.markerBand)
+            Rectangle().frame(width: 2)
+        }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.8), radius: 1)
+        .frame(width: 12)
+        .offset(x: x - 6)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+    /// How wide the grab caps are drawn, and how far past them a drag still counts. Chunky on
+    /// purpose: a 6 pt sliver is hard to hit and harder to feel.
+    static let handleWidth: CGFloat = 16
+    static let handleRadius: CGFloat = 8
+    private static let handleGrab: CGFloat = 10
+
+    private func handle(_ name: String, at x: CGFloat, width: CGFloat, duration: Double, isStart: Bool, narrow: Bool) -> some View {
+        // A short loop on a long source can be only a few screen pixels wide. Split its handle
+        // targets vertically so neither cap covers the other.
+        let capHeight = narrow ? pictureHeight / 2 - 2 : pictureHeight
+        let leading = isStart
+        return ZStack {
+            UnevenRoundedRectangle(
+                topLeadingRadius: leading ? Self.handleRadius : 0,
+                bottomLeadingRadius: leading ? Self.handleRadius : 0,
+                bottomTrailingRadius: leading ? 0 : Self.handleRadius,
+                topTrailingRadius: leading ? 0 : Self.handleRadius
+            )
+            .fill(LoopColors.fill(selectedColor))
+            .frame(width: Self.handleWidth, height: capHeight)
+            // Three grip lines, the way a grabbable edge reads in Final Cut and Photos.
+            HStack(spacing: 2.5) {
+                ForEach(0..<3, id: \.self) { _ in
+                    Capsule().fill(LoopColors.text(on: selectedColor).opacity(0.75))
+                        .frame(width: 1.5, height: min(18, capHeight - 16))
+                }
+            }
+            if narrow {
+                Text(isStart ? "A" : "B").font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(LoopColors.text(on: selectedColor))
+                    .offset(y: capHeight / 2 + 1)
+            }
+        }
+        .frame(width: Self.handleWidth + Self.handleGrab * 2, height: capHeight + 6)
+        .contentShape(Rectangle())
+        .offset(x: (isStart ? x : x - Self.handleWidth) - Self.handleWidth / 2 - Self.handleGrab + Self.handleWidth / 2,
+                y: narrow ? (isStart ? -pictureHeight / 4 : pictureHeight / 4) : 0)
+        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("filmstrip")).onChanged { value in
+            if handleOrigin == nil, let loop = model.loops.selected {
+                handleOrigin = loop; model.beginLoopDrag(loop.id)
+            }
+            guard let original = handleOrigin else { return }
+            let delta = value.translation.width / width * duration
+            model.dragLoopHandle(start: isStart, original: original, by: delta, tolerance: Double(Self.snapDistance / width) * duration)
+        }.onEnded { _ in handleOrigin = nil; model.endLoopDrag() })
+        .help(isStart ? "Drag A to change where the loop starts, keeping B fixed. It snaps to the other loops' edges, the playhead and the movie's ends."
+                      : "Drag B to change where the loop ends, keeping A fixed. The playhead shows the loop's last frame.")
+        .accessibilityLabel("\(name) range handle").accessibilityValue(timeLabel(isStart ? model.settings.start : model.settings.end))
+        .accessibilityAdjustableAction { direction in
+            guard let original = model.loops.selected else { return }
+            model.beginLoopDrag(original.id)
+            let delta = direction == .increment ? 0.1 : -0.1
+            model.dragLoopHandle(start: isStart, original: original, by: delta)
+        }
+        }
 
 }
 
@@ -484,16 +605,17 @@ private struct LoopHeader: View {
     let sourceDuration: Double
     @State private var dragOrigin: MovieLoop?
     @FocusState private var focused: Bool
-    private var selected: Bool { model.loops.selectedID == loop.id }
+    private var selected: Bool { model.loops.selectedID == loop.id || model.playsAllLoops }
 
-    private var barWidth: CGFloat {
-        let span = timelineWidth * CGFloat(loop.duration / sourceDuration)
-        return min(timelineWidth, max(44, span))
-    }
+    /// The drawn bar spans exactly A…B, so loops chained end to end sit flush on the timeline.
+    private var spanWidth: CGFloat { min(timelineWidth, max(2, timelineWidth * CGFloat(loop.duration / sourceDuration))) }
+    private var spanLeft: CGFloat { min(timelineWidth * CGFloat(loop.start / sourceDuration), timelineWidth - spanWidth) }
+
+    /// The grab area never gets narrower than 44 pt, however short the loop is drawn.
+    private var barWidth: CGFloat { min(timelineWidth, max(44, spanWidth)) }
 
     private var barLeft: CGFloat {
-        let midpoint = timelineWidth * CGFloat((loop.start + loop.end) / sourceDuration) / 2
-        return max(0, min(midpoint - barWidth / 2, timelineWidth - barWidth))
+        max(0, min(spanLeft + spanWidth / 2 - barWidth / 2, timelineWidth - barWidth))
     }
 
     var body: some View {
@@ -504,29 +626,45 @@ private struct LoopHeader: View {
     }
 
     private var headerLabel: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .bold)).rotationEffect(.degrees(90))
-            Text(barWidth > 75 ? "Loop \(number)" : String(number)).font(.system(size: 10, weight: .semibold))
+        ZStack(alignment: .leading) {
+            Color.clear
+            HStack(spacing: 5) {
+                if spanWidth >= 44 { Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .bold)).rotationEffect(.degrees(90)) }
+                if spanWidth >= 20 { Text(spanWidth > 75 ? "Loop \(number)" : String(number)).font(.system(size: 12, weight: .semibold)) }
+            }
+            .frame(width: spanWidth, height: 20)
+            .foregroundStyle(selected ? LoopColors.text(on: loop.colorIndex) : LoopColors.onDark(loop.colorIndex))
+            .background(selected ? LoopColors.fill(loop.colorIndex) : LoopColors.fill(loop.colorIndex).opacity(0.2), in: RoundedRectangle(cornerRadius: min(3, spanWidth / 2)))
+            .overlay(RoundedRectangle(cornerRadius: min(3, spanWidth / 2)).stroke(focused ? Color.white : LoopColors.fill(loop.colorIndex).opacity(selected ? 0 : 0.55), lineWidth: 1))
+            .offset(x: spanLeft - barLeft)
         }
         .frame(width: barWidth, height: 20)
-        .foregroundStyle(selected ? Color.black : Color.yellow)
-        .background(selected ? Color.yellow : Color.yellow.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
-        .overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? Color.white : Color.yellow.opacity(selected ? 0 : 0.45), lineWidth: 1))
         .contentShape(Rectangle())
     }
 
-    private var interactiveHeader: some View {
+    /// Split from `interactiveHeader` so the type checker does not choke on one long chain.
+    private var headerWithGesturesAndFocus: some View {
         headerLabel
             .gesture(moveGesture)
             .focusable().focused($focused)
             .onChange(of: model.loops.selectedID) { _, id in focused = id == loop.id }
-            .onAppear { focused = selected }
+            .onAppear { focused = model.loops.selectedID == loop.id }
+            .onChange(of: focused) { _, isFocused in model.setLoopHeaderFocused(loop.id, focused: isFocused) }
+            .onDisappear { model.setLoopHeaderFocused(loop.id, focused: false) }
+    }
+
+    private var interactiveHeader: some View {
+        headerWithGesturesAndFocus
             .onKeyPress(.leftArrow, phases: .down) { press in moveByKeyboard(press.modifiers.contains(.shift) ? -1 : -0.1); return .handled }
             .onKeyPress(.rightArrow, phases: .down) { press in moveByKeyboard(press.modifiers.contains(.shift) ? 1 : 0.1); return .handled }
+            .onKeyPress(keys: [.delete, .deleteForward], phases: .down) { _ in model.removeLoop(loop.id); return .handled }
+            .contextMenu {
+                Button("Delete Loop \(number)", systemImage: "trash", role: .destructive) { model.removeLoop(loop.id) }
+            }
             .accessibilityLabel("Move Loop \(number)")
             .accessibilityValue("\(timeLabel(loop.start)) to \(timeLabel(loop.end)), \(timeLabel(loop.duration)) long" + (selected ? ", selected" : ""))
             .accessibilityAdjustableAction { direction in moveByKeyboard(direction == .increment ? 0.1 : -0.1) }
-            .help("Drag this yellow header to move the whole loop. Arrow keys move 0.1s; Shift-arrow moves 1s. Drag the filmstrip below to scrub.")
+            .help("Drag this header to move the whole loop; it snaps to the other loops' edges, the playhead and the movie's ends, marked by a dashed guide. With this header focused: arrow keys move it 0.1s, Shift-arrow 1s, Delete removes it. Click elsewhere first and the arrow keys move the playhead instead. Drag the filmstrip below to scrub.")
     }
 
     private var moveGesture: some Gesture {
@@ -538,10 +676,11 @@ private struct LoopHeader: View {
                 }
                 guard let original = dragOrigin else { return }
                 let delta = Double(value.translation.width / timelineWidth) * sourceDuration
-                model.moveLoop(loop.id, originalStart: original.start, originalEnd: original.end, by: delta)
+                model.moveLoop(loop.id, originalStart: original.start, originalEnd: original.end, by: delta,
+                               tolerance: Double(Filmstrip.snapDistance / timelineWidth) * sourceDuration)
             }
             .onEnded { value in
-                dragOrigin = nil
+                dragOrigin = nil; model.endLoopDrag()
                 if value.translation.width == 0 && value.translation.height == 0 { model.selectLoop(loop.id) }
             }
     }

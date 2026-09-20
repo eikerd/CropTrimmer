@@ -23,8 +23,8 @@ struct ReviewView: View {
                         VStack(alignment: .leading) { Text("Exported · \(result.width) × \(result.height)").font(.headline); PlayerSurface(player: player).frame(height: 230).background(.black) }
                     } else { comparison("Exported · \(result.width) × \(result.height)", image: resultImage) }
                 }
-                if !originalDetails.isEmpty { Text("Original: " + originalDetails).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
-                if let previewError { Text(previewError).font(.caption).foregroundStyle(.orange) }
+                if !originalDetails.isEmpty { Text("Original: " + originalDetails).font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary) }
+                if let previewError { Text(previewError).font(.system(size: 12)).foregroundStyle(.orange) }
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(result.url.lastPathComponent).font(.headline).textSelection(.enabled)
@@ -33,7 +33,7 @@ struct ReviewView: View {
                         Text("Requested: \(timeLabel(result.settings.start)) – \(timeLabel(result.settings.end))").monospacedDigit()
                         Text(String(format: "Actual boundary shifts: %+.3f s / %+.3f s", result.actualStart - result.settings.start, result.actualEnd - result.settings.end)).monospacedDigit()
                         if !result.note.isEmpty { Text(result.note).foregroundStyle(.secondary) }
-                    }.font(.caption)
+                    }.font(.system(size: 12))
                     Spacer()
                     VStack {
                         Button("Play result") { resultPlayer?.pause(); let player = AVPlayer(url: result.url); resultPlayer = player; player.play() }
@@ -47,7 +47,7 @@ struct ReviewView: View {
                 Button { resultPlayer?.pause(); resultPlayer = nil; selectedID = result.id } label: {
                     HStack {
                         Image(systemName: result.settings.cropEnabled ? "crop" : "scissors")
-                        VStack(alignment: .leading, spacing: 3) { Text(result.url.lastPathComponent).lineLimit(1); Text("\(timeLabel(result.duration)) · \(result.width) × \(result.height) · \(result.quality?.rawValue ?? "Source quality")").font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 3) { Text(result.url.lastPathComponent).lineLimit(1); Text("\(timeLabel(result.duration)) · \(result.width) × \(result.height) · \(result.quality?.rawValue ?? "Source quality")").font(.system(size: 12)).foregroundStyle(.secondary) }
                         Spacer()
                         Text(byteLabel(result.bytes)).monospacedDigit()
                         if result.id == selected?.id { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }

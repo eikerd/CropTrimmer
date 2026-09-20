@@ -54,4 +54,47 @@ final class ModelTests: XCTestCase {
         settings.start = 7; settings.end = 6
         XCTAssertThrowsError(try settings.validate(source: source))
     }
+
+    func testPlaybackModeButtonCyclesThroughEveryModeOnce() {
+        var mode = PlaybackMode.repeatSelection
+        var seen: [PlaybackMode] = []
+        for _ in PlaybackMode.allCases { seen.append(mode); mode = mode.next }
+        XCTAssertEqual(mode, .repeatSelection)
+        XCTAssertEqual(Set(seen), Set(PlaybackMode.allCases))
+        XCTAssertEqual(PlaybackMode.repeatSelection.next, .once)
+    }
+
+    func testSpeedIsOneOfTheMenuRatesAndSetsTheOutputLength() throws {
+        var source = EditSettings(); source.start = 10; source.end = 20
+        XCTAssertEqual(source.speed, 1)
+        XCTAssertEqual(source.outputDuration, 10)
+        var half = source; half.speed = 0.5
+        XCTAssertEqual(half.outputDuration, 20, "Half speed takes twice as long to play")
+        var eight = source; eight.speed = 8
+        XCTAssertEqual(eight.outputDuration, 1.25)
+        XCTAssertEqual(EditSettings.speeds.first, 0.1); XCTAssertEqual(EditSettings.speeds.last, 8)
+        XCTAssertTrue(EditSettings.speeds.contains(1))
+    }
+
+    func testSpeedOutsideTheMenuIsRefused() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        try Data("fixture".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let media = MediaSource(url: url, identity: try SourceIdentity(url: url), duration: 30, width: 320, height: 240, encodedWidth: 320, encodedHeight: 240, rotation: 0, fps: 25, videoCodec: "h264", audioCount: 1, subtitleCount: 0, format: "mp4")
+        var edit = EditSettings(source: media); edit.end = 10
+        edit.speed = 3
+        XCTAssertThrowsError(try edit.validate(source: media))
+        edit.speed = 0
+        XCTAssertThrowsError(try edit.validate(source: media))
+        edit.speed = 0.25
+        XCTAssertNoThrow(try edit.validate(source: media))
+    }
+
+    func testSpeedSurvivesACodingRoundTripAndOlderSettingsDefaultToNormal() throws {
+        var edit = EditSettings(); edit.start = 1; edit.end = 5; edit.speed = 0.25
+        let restored = try JSONDecoder().decode(EditSettings.self, from: JSONEncoder().encode(edit))
+        XCTAssertEqual(restored.speed, 0.25)
+        let old = try JSONDecoder().decode(EditSettings.self, from: Data(#"{"start":0,"end":5,"cropEnabled":false,"crop":{"x":0,"y":0,"width":16,"height":16},"method":"Automatic","quality":"Balanced"}"#.utf8))
+        XCTAssertEqual(old.speed, 1)
+    }
 }

@@ -1,6 +1,7 @@
-import AppKit
 import SwiftUI
 
+/// The AI page of the Settings window: the OpenRouter key, and which vision model does the
+/// colour work. The naming model sits on the File Names page, beside the names it shapes.
 struct ColorSettingsView: View {
     @ObservedObject var model: EditorModel
     @State private var apiKey = ""
@@ -37,43 +38,18 @@ struct ColorSettingsView: View {
                     TextField("Endpoint", text: $model.colorProviderEndpoint)
                 }
             }
-            Section("File naming · OpenRouter") {
-                visionModelPicker(selection: $model.filenameModel)
-            }
-            Section("Crop") {
-                HStack {
-                    Text("Default size")
-                    Spacer()
-                    TextField("Width", value: $model.defaultCropWidth, format: .number)
-                        .frame(width: 60).multilineTextAlignment(.trailing)
-                        .accessibilityLabel("Default crop width in pixels")
-                    Text("×").foregroundStyle(.secondary)
-                    TextField("Height", value: $model.defaultCropHeight, format: .number)
-                        .frame(width: 60).multilineTextAlignment(.trailing)
-                        .accessibilityLabel("Default crop height in pixels")
-                }
-            }
-            HStack {
-                Spacer()
-                Button("Done") { dismissSettings() }
-                    .keyboardShortcut(.defaultAction)
+            Section {
+                Text("The key is kept in the Keychain, never in a file or this repository. Leave the custom endpoint empty to use OpenRouter.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 510)
-        .preferredColorScheme(.dark)
+        .padding(20)
         .onAppear { apiKey = (try? OpenRouterKeyStore.read()) ?? "" }
         .onDisappear { result = nil }
         .alert("Could not save API key", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
-    }
-
-    // The Settings scene has no dismiss action of its own, so close the window
-    // hosting this view directly.
-    private func dismissSettings() {
-        let settingsWindow = NSApp.keyWindow ?? NSApp.windows.first { $0.title == "Crop Trimmer Settings" }
-        settingsWindow?.performClose(nil)
     }
 
     private var usesOpenRouter: Bool {

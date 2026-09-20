@@ -1,42 +1,50 @@
 import SwiftUI
 import CropTrimmerCore
 
-/// A queue entry can be edited without changing which loop is playing.
+/// A queue entry can be edited without changing which loop is playing. It is laid out flat and
+/// always expanded — color correction, crop, export — with the explanatory text in tooltips on the
+/// controls it describes rather than in its own block.
 struct QueueLoopCard: View {
     @ObservedObject var model: EditorModel
     let loop: MovieLoop
     let number: Int
-    @State private var showOutputDetails = false
     @State private var cropRevision = UUID()
     @State private var timeRevision = UUID()
 
-    private var selected: Bool { model.loops.selectedID == loop.id }
+    /// "Selected" here is about how the card reads: while every loop is queued to play, they all
+    /// look selected. Actions that can only apply to one loop use `isTheSelectedLoop`.
+    private var selected: Bool { isTheSelectedLoop || model.playsAllLoops }
+    private var isTheSelectedLoop: Bool { model.loops.selectedID == loop.id }
     private var edit: EditSettings { model.loops.ranges.first { $0.id == loop.id }?.settings ?? loop.settings }
     private var locked: Bool { edit.cropAspectRatio != nil && edit.cropAspectRatio != .free }
-    private var adjusting: Bool { selected && model.cropAdjusting }
+    private var adjusting: Bool { isTheSelectedLoop && model.cropAdjusting }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             timeRow
-            cropRow
+            speedRow
             ColorControlsView(model: model, loopID: loop.id, number: number)
+            cropSection
+            exportSection
             ForEach((model.queueInputErrors[loop.id] ?? [:]).keys.sorted(), id: \.self) { key in
                 Text(model.queueInputErrors[loop.id]?[key] ?? "")
-                    .font(.caption2).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            footer
         }
-        .font(.system(size: 11)).controlSize(.mini).padding(8)
-        .background(selected ? Color.yellow.opacity(0.15) : Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(selected ? Color.yellow.opacity(0.35) : .clear))
+        .font(.system(size: 12))
+        .modifier(LoopPanel(selected: selected, colorIndex: loop.colorIndex))
         .disabled(model.isBusy || model.source == nil)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Loop \(number)" + (selected ? ", selected" : ""))
-        .contextMenu { Button("Set loop to whole movie", action: resetRange) }
+        .contextMenu {
+            Button("Set loop to whole movie", action: resetRange)
+            Button("Delete Loop \(number)", systemImage: "trash", role: .destructive) { model.removeLoop(loop.id) }
+        }
     }
 
     private var timeRow: some View {
         HStack(spacing: 4) {
+            LoopColorSwatch(colorIndex: loop.colorIndex, number: number) { model.setLoopColor(loop.id, to: $0) }
             Button { model.selectLoop(loop.id) } label: {
                 Text(String(format: "Loop %02d", number)).fontWeight(.semibold).fixedSize()
             }.buttonStyle(.plain).help("Preview Loop \(number)")
@@ -45,8 +53,24 @@ struct QueueLoopCard: View {
             timeField("End", label: "B", start: false)
             HStack(spacing: 2) {
                 Text("D").foregroundStyle(.secondary)
-                Text(queueSeconds(edit.duration)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+                Text(queueSeconds(edit.duration)).monospacedDigit().lineLimit(1)
             }.help("Duration in seconds").accessibilityLabel("Duration \(queueSeconds(edit.duration)) seconds")
+            Button { model.removeLoop(loop.id) } label: { Image(systemName: "trash") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Delete Loop \(number)").accessibilityLabel("Delete Loop \(number)")
+        }
+    }
+
+    /// The loop's own speed: the same number the preview plays at and the export renders at.
+    private var speedRow: some View {
+        HStack(spacing: 4) {
+            Text("Speed").foregroundStyle(.secondary)
+            Picker("Speed", selection: Binding(get: { edit.speed }, set: { value in update { $0.speed = value } })) {
+                ForEach(EditSettings.speeds, id: \.self) { Text(EditSettings.speedLabel($0)).tag($0) }
+            }.labelsHidden().fixedSize()
+                .accessibilityLabel("Loop \(number) speed")
+                .help("Plays and renders Loop \(number) at this speed. The export runs \(queueSeconds(edit.outputDuration))s.")
+            Spacer(minLength: 0)
         }
     }
 
@@ -64,187 +88,144 @@ struct QueueLoopCard: View {
         }
     }
 
-    /// One line: enable, ratio, lock, size, preview. With crop off the size is the
-    /// source's and every control is inert.
-    private var cropRow: some View {
-        HStack(spacing: 5) {
-            Button {
+    private var cropSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Toggle("Crop", isOn: Binding(get: { edit.cropEnabled }, set: { enabled in
+                    update { $0.cropEnabled = enabled }
+                    if !enabled {
+                        clearCropDrafts()
+                        if adjusting { model.doneCrop() }
+                    }
+                })).toggleStyle(.checkbox)
+                    .help("Crop selects source pixels and always re-encodes.")
+                Spacer(minLength: 0)
                 if edit.cropEnabled {
-                    update { $0.cropEnabled = false }
-                    clearCropDrafts()
-                    if adjusting { model.doneCrop() }
-                } else {
-                    enableCrop()
+                    Button(adjusting ? "Done" : "Adjust") {
+                        if adjusting { model.doneCrop() }
+                        else { model.selectLoop(loop.id, seekToStart: false); model.beginCrop() }
+                    }.help("Adjust Loop \(number)'s crop in the preview")
+                    Button("Reset", action: resetCrop)
                 }
-            } label: {
-                Image(systemName: "crop")
-                    .frame(width: 16, height: 20).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(edit.cropEnabled ? Color.accentColor : .primary)
-            .help(edit.cropEnabled ? "Turn off cropping" : "Crop this loop")
-            .accessibilityLabel("Loop \(number): " + (edit.cropEnabled ? "turn off cropping" : "crop this loop"))
+            if edit.cropEnabled { cropControls }
+        }
+    }
 
-            Picker("Ratio", selection: Binding(get: { edit.cropAspectRatio ?? .free }, set: setAspect)) {
+    private var cropControls: some View {
+        HStack(spacing: 3) {
+            Picker("Aspect ratio", selection: Binding(get: { edit.cropAspectRatio ?? .free }, set: setAspect)) {
                 ForEach(CropAspectRatio.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }.labelsHidden().frame(width: 78).accessibilityLabel("Loop \(number) aspect ratio")
-                .disabled(!edit.cropEnabled)
-
+            }.labelsHidden().frame(width: 60).accessibilityLabel("Loop \(number) aspect ratio")
+            coordinate("X", \.x)
+            coordinate("Y", \.y)
             Button { setAspect(locked ? .free : (edit.lastLockedCropAspectRatio ?? .original)) } label: {
                 Image(systemName: locked ? "lock.fill" : "lock.open")
-                    .frame(width: 14, height: 20).contentShape(Rectangle())
+                    .frame(width: 14, height: 24).contentShape(Rectangle())
             }.buttonStyle(.plain).help(locked ? "Unlock proportions" : "Lock proportions")
                 .accessibilityLabel("Loop \(number): " + (locked ? "Unlock crop aspect ratio" : "Lock crop aspect ratio"))
-                .disabled(!edit.cropEnabled)
-
-            if edit.cropEnabled {
-                dimension("Width", \.width)
-                Text("×").foregroundStyle(.secondary)
-                dimension("Height", \.height)
-            } else if let source = model.source {
-                Group {
-                    Text("\(source.width)").monospacedDigit().frame(width: 46, alignment: .trailing)
-                    Text("×")
-                    Text("\(source.height)").monospacedDigit().frame(width: 46, alignment: .leading)
-                }.foregroundStyle(.tertiary)
-                .accessibilityLabel("Source size \(source.width) by \(source.height) pixels, not cropped")
-            }
-
-            Button {
-                if adjusting { model.doneCrop() }
-                else { model.selectLoop(loop.id, seekToStart: false); model.beginCrop() }
-            } label: {
-                CropPreviewIcon(active: !adjusting)
-            }
-            .buttonStyle(.plain)
-            .help("Crop preview")
-            .accessibilityLabel("Crop preview for Loop \(number)")
-            .disabled(!edit.cropEnabled)
+            Text("\(edit.crop.width) × \(edit.crop.height)")
+                .monospacedDigit().lineLimit(1).fixedSize()
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityLabel("Crop dimensions \(edit.crop.width) by \(edit.crop.height) pixels")
+                .help("Source pixels; drag crop corners to resize")
         }
-        .font(.system(size: 12))
     }
 
-    /// Turns cropping on at the size chosen in Settings, centred in the picture.
-    private func enableCrop() {
-        guard let source = model.source else { return }
-        let width = min(max(2, model.defaultCropWidth), source.width)
-        let height = min(max(2, model.defaultCropHeight), source.height)
-        let start = PixelRect(x: (source.width - width) / 2, y: (source.height - height) / 2,
-                              width: width, height: height)
-        update {
-            $0.cropEnabled = true
-            $0.crop = CropGeometry.fitted(start, aspect: $0.cropAspectRatio ?? .free,
-                                          sourceWidth: source.width, sourceHeight: source.height)
+    private func coordinate(_ title: String, _ key: WritableKeyPath<PixelRect, Int>) -> some View {
+        HStack(spacing: 2) {
+            Text(title).foregroundStyle(.secondary)
+            CropInput(title: title, value: edit.crop[keyPath: key], error: errorBinding("Crop " + title)) { value in
+                guard let source = model.source else { return "Open a movie first." }
+                var next = edit
+                next.crop[keyPath: key] = value
+                guard next.crop == next.crop.constrained(toWidth: source.width, height: source.height) else {
+                    return "Crop \(title): use even pixel values inside the source picture."
+                }
+                return model.updateLoop(id: loop.id, settings: next)
+            }.id(cropRevision).frame(minWidth: 24, maxWidth: 35)
+                .accessibilityLabel("Loop \(number) crop \(title)")
         }
-        clearCropDrafts()
     }
 
-    private func dimension(_ title: String, _ key: WritableKeyPath<PixelRect, Int>) -> some View {
-        CropInput(title: title, value: edit.crop[keyPath: key], error: errorBinding("Crop " + title)) { value in
-            guard let source = model.source else { return "Open a movie first." }
-            var next = edit
-            next.crop = CropGeometry.dimension(next.crop,
-                                               width: key == \.width ? value : nil,
-                                               height: key == \.height ? value : nil,
-                                               aspect: next.cropAspectRatio ?? .free,
-                                               sourceWidth: source.width, sourceHeight: source.height)
-            guard next.crop[keyPath: key] == value else {
-                return "Crop \(title.lowercased()): use an even value that fits inside the picture."
-            }
-            return model.updateLoop(id: loop.id, settings: next)
-        }.id(cropRevision).frame(width: 52)
-            .accessibilityLabel("Loop \(number) crop \(title.lowercased())")
-    }
-
-    private var exportOptions: some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private var exportSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 5) {
                 Picker("Method", selection: setting(\.method)) {
                     ForEach(ExportMethod.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.labelsHidden().accessibilityLabel("Loop \(number) export method")
+                }.labelsHidden().help(methodHelp).accessibilityLabel("Loop \(number) export method")
                 Picker("Quality", selection: setting(\.quality)) {
                     ForEach(Quality.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.labelsHidden().accessibilityLabel("Loop \(number) encoding quality")
-                    .disabled(!reEncodes)
+                }.labelsHidden().help(qualityHelp).accessibilityLabel("Loop \(number) encoding quality")
+                    .disabled(!edit.cropEnabled && edit.color.isIdentity && edit.method == .fast)
             }
-
-        }
-    }
-
-    /// Collapsed by default: only the planned filename shows until this is opened.
-    @ViewBuilder private var outputDetails: some View {
-        if let source = model.source {
-            DisclosureGroup("Output details", isExpanded: $showOutputDetails) {
-                VStack(alignment: .leading, spacing: 4) {
-                    encodingPlan
-                    Text("Source: \(source.videoCodec), \(source.audioCount) audio track(s), \(source.subtitleCount) subtitle track(s).")
-                    Text(edit.color.isIdentity ? "Fast trim copies video and all audio tracks. Re-encoding uses H.264 video and the first audio track as AAC." : "Color correction requires re-encoding with H.264 video and the first audio track as AAC.")
-                    Text("Subtitles, chapters and attachments are not retained. Automatic trim may re-encode when clean stream copying is unavailable.")
-                    Text("Size estimates sample this loop; the final size can differ with motion and detail.")
-                    if let restriction = source.encodingRestriction { Text(restriction).foregroundStyle(.orange) }
-                    if source.subtitleCount > 0 || (source.audioCount > 1 && (edit.cropEnabled || !edit.color.isIdentity || edit.method != .fast)) {
-                        Text("Some tracks may be omitted.").foregroundStyle(.orange)
-                    }
-                }.font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 4)
-            }.font(.system(size: 12))
-        }
-    }
-
-    /// The encoding method and size estimate, shown only inside Output details.
-    @ViewBuilder private var encodingPlan: some View {
-        if let source = model.source {
-            if let proposed = model.queuePlans[loop.id] {
-                Text(proposed.method == .copy
-                     ? "\(source.videoCodec.uppercased()) · stream copy planned"
-                     : "H.264 · \(edit.quality.rawValue) · \(source.audioCount > 0 ? "AAC audio" : "no audio")")
-                if proposed.method == .copy {
-                    let bytes = Int64(Double(source.identity.size) * proposed.duration / source.duration)
-                    Text("Estimated size ≈ \(byteLabel(bytes))")
-                        .help("Quick estimate from source size and planned duration; final size can differ.")
-                } else {
-                    HStack {
-                        Text(model.queueEstimates[loop.id]?[edit.quality].map { "Estimated size ≈ " + byteLabel($0) } ?? "Size not estimated")
-                        Spacer(minLength: 2)
-                        Button(model.queueEstimates[loop.id] == nil ? "Estimate" : "Refresh") { model.estimateLoop(loop.id) }
-                            .disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
-                            .help("Sample this loop to estimate encoded file size")
-                    }
+            HStack(spacing: 5) {
+                if let size = sizeLabel {
+                    Text(size).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                        .help("Estimates sample this loop; the final size can differ with motion and detail.")
                 }
-            } else if let error = model.queuePlanErrors[loop.id] {
-                Text(error).foregroundStyle(.orange)
-            } else {
-                Text("Checking output encoding and size…")
+                Spacer(minLength: 0)
+                if model.queuePlans[loop.id]?.method == .encode {
+                    Button(model.queueEstimates[loop.id] == nil ? "Estimate" : "Refresh") { model.estimateLoop(loop.id) }
+                        .disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
+                        .help("Sample this loop to estimate its encoded file size")
+                }
+                Button { model.exportLoop(loop.id) } label: { Label("Export Loop \(number)", systemImage: "square.and.arrow.up") }
+                    .disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
+                    .help(exportHelp)
+            }
+            if let error = model.queuePlanErrors[loop.id] {
+                Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let source = model.source {
-                let proposed = model.queuePlans[loop.id]
-                let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
-                    trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number)
-                    + "." + (proposed?.fileExtension ?? "mp4")
-                Text(filename).font(.system(size: 12)).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help("Planned output filename. An extra number is added if it already exists.")
-                outputDetails
-            }
-            Button { model.exportLoop(loop.id) } label: {
-                Label("Export Loop \(number)", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
-            }.disabled(model.hasErrors(for: loop.id) || model.cropAdjusting)
-            Text(reEncodes ? "Re-encoding · H.264" : "No re-encoding · trimmed copy")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
-            exportOptions
+    /// The size beside the Export button: the quick source-size estimate for a stream copy, the sampled
+    /// estimate for an encode once it exists, or "Checking…" while the plan is still being made.
+    private var sizeLabel: String? {
+        guard let source = model.source else { return nil }
+        guard let plan = model.queuePlans[loop.id] else { return model.queuePlanErrors[loop.id] == nil ? "Checking…" : nil }
+        if plan.method == .copy {
+            return "≈ " + byteLabel(Int64(Double(source.identity.size) * plan.duration / source.duration))
         }
+        return model.queueEstimates[loop.id]?[edit.quality].map { "≈ " + byteLabel($0) }
     }
 
-    /// True when the export has to re-encode rather than copy the stream through.
-    /// The planner is the authority: Automatic only re-encodes when a clean stream
-    /// copy is impossible, so the heuristic is a fallback until the plan arrives.
-    private var reEncodes: Bool {
-        if let planned = model.queuePlans[loop.id]?.method { return planned != .copy }
-        return edit.cropEnabled || !edit.color.isIdentity || edit.method == .accurate
+    /// What the chosen method means, what is planned right now, and what this movie loses on re-encode.
+    private var methodHelp: String {
+        var lines: [String]
+        switch edit.method {
+        case .automatic: lines = ["Automatic: copies the streams when the planned boundaries land within 0.25 s of A and B, otherwise re-encodes."]
+        case .fast: lines = ["Fast trim: copies video and every audio track without re-encoding; boundaries move to nearby keyframes, and the export fails rather than re-encoding if the copy cannot be verified."]
+        case .accurate: lines = ["Accurate trim: re-encodes for frame-exact boundaries."]
+        }
+        if edit.cropEnabled { lines.append("Crop always re-encodes.") }
+        else if !edit.color.isIdentity { lines.append("Color correction always re-encodes.") }
+        lines.append("Re-encoding writes H.264 video and the first audio track as AAC; subtitles, chapters and attachments are not kept.")
+        if let source = model.source {
+            if let plan = model.queuePlans[loop.id] {
+                lines.append(plan.method == .copy ? "Planned now: \(source.videoCodec.uppercased()) stream copy."
+                                                  : "Planned now: H.264 · \(edit.quality.rawValue) · \(source.audioCount > 0 ? "AAC audio" : "no audio").")
+            }
+            if source.audioCount > 1 || source.subtitleCount > 0 {
+                lines.append("This movie has \(source.audioCount) audio and \(source.subtitleCount) subtitle track(s); only the first audio track survives a re-encode.")
+            }
+            if let restriction = source.encodingRestriction { lines.append(restriction) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private var qualityHelp: String {
+        "\(edit.quality.rawValue): software H.264 at CRF \(edit.quality.crf) with AAC audio at 192 kb/s. Applies only when the export re-encodes."
+    }
+
+    private var exportHelp: String {
+        guard let source = model.source else { return "" }
+        let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
+            trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number,
+            speed: edit.speed, options: model.filenameOptions)
+            + "." + (model.queuePlans[loop.id]?.fileExtension ?? "mp4")
+        return "Saves \(filename) beside the original. An extra number is added if that name exists."
     }
 
     private func errorBinding(_ key: String) -> Binding<String?> {
@@ -284,9 +265,31 @@ struct QueueLoopCard: View {
         timeRevision = UUID()
     }
 
+    private func resetCrop() {
+        guard let source = model.source else { return }
+        update {
+            $0.crop = CropGeometry.fitted(PixelRect(width: source.width, height: source.height), aspect: $0.cropAspectRatio ?? .free,
+                                        sourceWidth: source.width, sourceHeight: source.height)
+        }
+        clearCropDrafts()
+    }
+
     private func clearCropDrafts() {
         errorBinding("Crop X").wrappedValue = nil
         errorBinding("Crop Y").wrappedValue = nil
         cropRevision = UUID()
+    }
+}
+
+/// Each loop sits on a panel tinted in its own color, like an Ableton clip; the selected loop's
+/// tint is stronger and outlined in the same color.
+struct LoopPanel: ViewModifier {
+    static let spacing: CGFloat = 10
+    let selected: Bool
+    let colorIndex: Int
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, 8).padding(.vertical, 10)
+            .background(LoopColors.fill(colorIndex).opacity(selected ? 0.26 : 0.14), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? LoopColors.onDark(colorIndex) : Color.clear, lineWidth: 1.5))
     }
 }

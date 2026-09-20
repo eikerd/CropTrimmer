@@ -12,11 +12,60 @@ final class EditorModel: ObservableObject {
     @Published var source: MediaSource?
     @Published var settings = EditSettings() { didSet { settingsChanged(from: oldValue) } }
     @Published private(set) var loops = MovieLoops()
-    @Published private(set) var defaultLoopLength: Double = 5
+    /// The length new loops get; also a persisted preference, so it is remembered across launches.
+    /// The transport's 5s/10s buttons still change it live, exactly as before.
+    @Published var defaultLoopLength: Double = {
+        let stored = UserDefaults.standard.double(forKey: EditorModel.defaultLoopLengthKey)
+        return stored == 5 || stored == 10 ? stored : 5
+    }() { didSet { UserDefaults.standard.set(defaultLoopLength, forKey: EditorModel.defaultLoopLengthKey) } }
+    private static let defaultLoopLengthKey = "CropTrimmer.defaultLoopLength"
+    /// The loop headers currently holding keyboard focus (normally at most one). A set, not a bool
+    /// set directly by each header, so moving focus from one header straight to another can never
+    /// race: each header only ever inserts/removes its own id, in either order, to the same result.
+    @Published private var focusedLoopHeaderIDs: Set<UUID> = []
+    /// True while a loop header on the timeline owns keyboard focus, so the global arrow-key
+    /// playhead nudges yield to the header's own 0.1s/1s nudge.
+    var loopHeaderHasKeyboardFocus: Bool { !focusedLoopHeaderIDs.isEmpty }
+    func setLoopHeaderFocused(_ id: UUID, focused: Bool) {
+        if focused { focusedLoopHeaderIDs.insert(id) } else { focusedLoopHeaderIDs.remove(id) }
+    }
+    /// Which operations show up in an exported file's name. Persisted, so it survives a launch.
+    @Published var filenameOptions = FilenameOptions.load() { didSet { filenameOptions.save() } }
+    enum PreferencesTab: Hashable { case general, ai, filenames, shortcuts }
+    @Published var preferencesTab: PreferencesTab = .general
+    /// Set by the view that hosts the Settings scene, so the model can open it (e.g. for `?`).
+    var openPreferences: (() -> Void)?
+    /// True while the Settings window is on screen, so the editor's global key monitor keeps its
+    /// hands off keystrokes meant for a preference control.
+    @Published var preferencesIsOpen = false
     var selectedLoopNumber: Int { (loops.ranges.firstIndex { $0.id == loops.selectedID } ?? 0) + 1 }
     @Published var position: Double = 0
     @Published var isPlaying = false
     @Published var playbackMode: PlaybackMode = .repeatSelection { didSet { updateBoundaryObserver() } }
+    /// Speed belongs to the loop, so previewing and exporting agree. With no loop selected the
+    /// movie plays whole, and the same control sets a monitoring speed that nothing renders.
+    @Published private(set) var monitorSpeed: Double = 1
+    var speed: Double { loops.selected?.settings.speed ?? monitorSpeed }
+    var speedIsRendered: Bool { loops.selected != nil }
+
+    func setSpeed(_ value: Double) {
+        guard !isBusy, !showReview, EditSettings.speeds.contains(where: { abs($0 - value) < 0.000001 }) else { return }
+        if let id = loops.selectedID, var edit = loops.ranges.first(where: { $0.id == id })?.settings {
+            edit.speed = value
+            keepingPlayback {
+                if let reason = updateLoop(id: id, settings: edit) { status = reason }
+            }
+        } else {
+            monitorSpeed = value
+        }
+        applyRate()
+    }
+
+    /// `defaultRate` is what `play()` starts at, so every resume and every A–B repeat keeps the speed.
+    private func applyRate() {
+        player.defaultRate = Float(speed)
+        if wantsPlayback, player.timeControlStatus != .paused { player.rate = Float(speed) }
+    }
     @Published var volume: Double = 1 { didSet { player.volume = Float(volume) } }
     @Published var muted = false { didSet { player.isMuted = muted } }
     @Published var cropAdjusting = false
@@ -71,6 +120,8 @@ final class EditorModel: ObservableObject {
     private var playbackOrigin: Double = 0
     private var looping = false
     private var wantsPlayback = false
+    /// Carries "was playing" across the async gap while another movie opens.
+    private var resumeAfterOpening = false
     private var playbackRevision: UInt64 = 0
     private var generation = UUID()
     private var jobID: UUID?
@@ -88,8 +139,11 @@ final class EditorModel: ObservableObject {
         endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self, let item = note.object as? AVPlayerItem, item === self.player.currentItem else { return }
-                if self.playbackMode == .repeatSelection { self.loopSelection() }
-                else { self.pause() }
+                switch self.playbackMode {
+                case .repeatSelection: self.loopSelection()
+                case .allLoops: self.advanceToNextLoop()
+                default: self.pause()
+                }
             }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -97,11 +151,29 @@ final class EditorModel: ObservableObject {
                 guard let self, self.source != nil, !self.showReview, !self.isBusy,
                       NSApp.keyWindow?.attachedSheet == nil,
                       !(NSApp.keyWindow is NSPanel),
-                      !(NSApp.keyWindow?.firstResponder is NSTextView),
-                      event.modifierFlags.isDisjoint(with: [.command, .control, .option]) else { return false }
+                      // The Settings window is an ordinary NSWindow, so it has to be named rather
+                      // than recognised by class; its controls keep their own keys.
+                      !self.preferencesIsOpen,
+                      !(NSApp.keyWindow?.firstResponder is NSTextView) else { return false }
+                let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                // Arrow-key playhead nudges: 1s bare, 5s with Shift, 0.2s with Option. A focused
+                // loop header's own onKeyPress (0.1s/1s) takes priority over these.
+                if let arrow = event.specialKey, arrow == .leftArrow || arrow == .rightArrow {
+                    // A focused AppKit control (slider, radio group, popup) adjusts itself with the
+                    // arrow keys; the playhead only gets them when nothing else wants them.
+                    guard !self.loopHeaderHasKeyboardFocus,
+                          !(NSApp.keyWindow?.firstResponder is NSControl),
+                          mods.isSubset(of: [.shift, .option]) else { return false }
+                    let sign: Double = arrow == .leftArrow ? -1 : 1
+                    let seconds = mods.contains(.shift) ? 5.0 : (mods.contains(.option) ? 0.2 : 1.0)
+                    self.jump(sign * seconds); return true
+                }
+                guard mods.isDisjoint(with: [.command, .control, .option]) else { return false }
                 switch event.charactersIgnoringModifiers?.lowercased() {
                 case "i": self.setStart(); return true
                 case "o": self.setEnd(); return true
+                case "?":
+                    self.preferencesTab = .shortcuts; self.openPreferences?(); return true
                 case " ":
                     // A focused AppKit control (button, popup, slider, field) owns Space for activation.
                     guard !(NSApp.keyWindow?.firstResponder is NSControl) else { return false }
@@ -359,7 +431,9 @@ final class EditorModel: ObservableObject {
         guard !isBusy else { status = "Finish or cancel the current operation before opening another movie."; return }
         guard url.isFileURL else { errorMessage = "Drop a local movie file."; return }
         openingTask?.cancel(); planningTask?.cancel(); thumbnailTask?.cancel(); colorSuggestionTask?.cancel()
+        let resume = wantsPlayback || resumeAfterOpening
         pause(); player.replaceCurrentItem(with: nil)
+        resumeAfterOpening = resume
         generation = UUID(); let requestedGeneration = generation
         scopedURL?.stopAccessingSecurityScopedResource(); scopedURL = nil
         if url.startAccessingSecurityScopedResource() { scopedURL = url }
@@ -385,18 +459,20 @@ final class EditorModel: ObservableObject {
                 playbackOrigin = origin
                 source = inspected
                 isResetting = true
-                loops = snapshot?.loops ?? MovieLoops(sourceDuration: inspected.duration, defaultLength: defaultLoopLength, settings: EditSettings(source: inspected))
+                // A movie opens bare: the whole timeline plays, and + puts the first loop at the playhead.
+                loops = snapshot?.loops ?? MovieLoops(sourceDuration: inspected.duration, withFirstLoop: false)
                 settings = loops.selected?.settings ?? EditSettings(source: inspected)
                 isResetting = false
                 player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
                 seek(snapshot?.position ?? 0)
                 refreshColorPreview(for: requestedGeneration)
-                player.volume = Float(volume); player.isMuted = muted
+                player.volume = Float(volume); player.isMuted = muted; applyRate()
                 isBusy = false; status = "Ready · \(inspected.width) × \(inspected.height) · \(timeLabel(inspected.duration))"
                 updateBoundaryObserver(); schedulePlan(); loadThumbnails(asset: asset, source: inspected)
+                if resumeAfterOpening { resumeAfterOpening = false; resumePlayback() }
             } catch {
                 guard generation == requestedGeneration else { return }
-                isBusy = false
+                isBusy = false; resumeAfterOpening = false
                 if error is CancellationError {
                     status = snapshot == nil ? "Opening cancelled" : "Renamed to \(url.lastPathComponent) · reload cancelled"
                 }
@@ -417,6 +493,7 @@ final class EditorModel: ObservableObject {
             if let id = loops.selectedID { queueEstimates[id] = nil }
         }
         if !settings.cropEnabled { cropAdjusting = false; timeInputErrors = timeInputErrors.filter { !$0.key.hasPrefix("Crop ") } }
+        applyRate()
         updateBoundaryObserver()
         refreshColorPreview(for: generation)
         schedulePlan()
@@ -454,6 +531,12 @@ final class EditorModel: ObservableObject {
         }
         queuePlanErrors = [:]
         plan = loops.selectedID.flatMap { queuePlans[$0] }
+        // A bare movie has nothing to plan, and the planning loop below would never revisit the
+        // status, leaving it reading "Checking export methods…" for good.
+        guard !snapshot.isEmpty else {
+            if !preserveStatus { status = "Ready · add a loop with + to export part of this movie" }
+            return
+        }
         if !preserveStatus { status = plan?.explanation ?? "Checking export methods…" }
         planningTask = Task {
             do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
@@ -491,9 +574,22 @@ final class EditorModel: ObservableObject {
         guard source != nil, !isBusy, !showReview else { return }
         cropAdjusting = false
         if wantsPlayback { pause(); return }
-        if playbackMode != .whole && (position < settings.start || position >= settings.end - 0.001) { seek(settings.start) }
-        else if let source, position >= source.duration - 0.001 { seek(0) }
-        wantsPlayback = true; player.play(); isPlaying = true
+        resumePlayback()
+    }
+
+    /// Playing is sticky: edits, loop changes and opening another movie keep playing if it was.
+    /// Only things that need a still frame (export, review, crop, frame step, Stop) stop it.
+    private func keepingPlayback(_ change: () -> Void) {
+        let resume = wantsPlayback
+        change()
+        if resume { resumePlayback() }
+    }
+
+    private func resumePlayback() {
+        guard let source, !isBusy, !showReview, !cropAdjusting else { return }
+        if playbackMode.followsLoop && (position < settings.start || position >= settings.end - 0.001) { seek(settings.start) }
+        else if position >= source.duration - 0.001 { seek(0) }
+        wantsPlayback = true; player.defaultRate = Float(speed); player.play(); player.rate = Float(speed); isPlaying = true
     }
     func stop() { guard !isBusy, !showReview else { return }; cropAdjusting = false; pause(); seek(playbackMode == .whole ? 0 : settings.start) }
     func step(_ direction: Int) {
@@ -504,30 +600,37 @@ final class EditorModel: ObservableObject {
         if direction > 0 && !item.canStepForward { status = "This movie does not support forward frame stepping."; return }
         item.step(byCount: direction < 0 ? -1 : 1)
     }
-    func jump(_ seconds: Double) { guard !isBusy, !showReview else { return }; cropAdjusting = false; pause(); seek(position + seconds) }
-    func recallStart() { pause(); seek(settings.start) }
+    func jump(_ seconds: Double) { guard !isBusy, !showReview else { return }; cropAdjusting = false; keepingPlayback { pause(); seek(position + seconds) } }
+    func recallStart() { keepingPlayback { pause(); seek(settings.start) } }
     func recallEnd() { pause(); seek(settings.end) }
     func setStart() {
+        // With no loop yet, I marks the first one's A at the playhead, exactly as + does.
+        guard !loops.ranges.isEmpty else { addLoop(); return }
         guard !isBusy, position < settings.end else { status = "Start must be before the end."; return }
         settings.start = position
     }
     func setEnd() {
+        // Unlike I, O cannot open a loop on its own: B alone says where a range ends, not where
+        // it starts, so there is nothing sensible to create from a single press.
+        guard !loops.ranges.isEmpty else { status = "Add a loop with + first."; return }
         guard !isBusy, position > settings.start, let source else { status = "End must be after the start."; return }
         settings.end = min(position, source.duration)
     }
-    func resetRange() { guard !isBusy, let source else { return }; timeInputErrors = [:]; timeInputRevision = UUID(); settings.start = 0; settings.end = source.duration }
+    func resetRange() { guard !isBusy, let source, !loops.ranges.isEmpty else { return }; timeInputErrors = [:]; timeInputRevision = UUID(); settings.start = 0; settings.end = source.duration }
     func selectLoop(_ id: UUID, seekToStart: Bool = true) {
         guard !isBusy, !showReview, source != nil, loops.ranges.contains(where: { $0.id == id }) else { return }
-        pause()
-        if loops.selectedID != id {
-            let cached = queueEstimates[id]
-            loops.select(id)
-            clearInputDrafts()
-            applySelectedLoop()
-            queueEstimates[id] = cached
-            estimates = cached ?? [:]
+        keepingPlayback {
+            pause()
+            if loops.selectedID != id {
+                let cached = queueEstimates[id]
+                loops.select(id)
+                clearInputDrafts()
+                applySelectedLoop()
+                queueEstimates[id] = cached
+                estimates = cached ?? [:]
+            }
+            if seekToStart { seek(settings.start) }
         }
-        if seekToStart { seek(settings.start) }
     }
 
     @discardableResult
@@ -552,75 +655,131 @@ final class EditorModel: ObservableObject {
               let index = loops.ranges.firstIndex(where: { $0.id == loops.selectedID }) else { return }
         let destination = index + direction
         guard loops.ranges.indices.contains(destination) else { return }
-        let resume = wantsPlayback
-        selectLoop(loops.ranges[destination].id)
-        // Loop navigation always gives transport a selection-based context.
-        if playbackMode == .whole { playbackMode = .repeatSelection }
-        if resume { togglePlayback() }
+        keepingPlayback {
+            selectLoop(loops.ranges[destination].id)
+            // Loop navigation always gives transport a selection-based context.
+            if playbackMode == .whole { playbackMode = .repeatSelection }
+        }
     }
 
     func addLoop() {
-        guard !isBusy, !showReview, source != nil, loops.ranges.count < MovieLoops.maximumCount else { return }
-        pause()
-        guard loops.add(length: defaultLoopLength) else { return }
-        clearInputDrafts(); applySelectedLoop(); seek(settings.start)
+        guard !isBusy, !showReview, let source else { return }
+        keepingPlayback {
+            pause()
+            guard loops.add(length: defaultLoopLength, at: position, settings: EditSettings(source: source)) else { return }
+            clearInputDrafts(); applySelectedLoop(); seek(settings.start)
+        }
+    }
+
+    /// Deletes any loop, not just the selected one; the trash buttons on queue cards and loop bars call this.
+    /// Deleting an unselected loop leaves the selection, the playhead and playback alone.
+    func removeLoop(_ id: UUID) {
+        guard !isBusy, !showReview, loops.ranges.contains(where: { $0.id == id }) else { return }
+        if loops.selectedID == id { removeLoop(); return }
+        guard loops.remove(id) else { return }
+        queueInputErrors[id] = nil; queueEstimates[id] = nil
+        schedulePlan(preserveStatus: true)
     }
 
     func removeLoop() {
-        guard !isBusy, !showReview, loops.ranges.count > 1 else { return }
-        pause()
-        let removedID = loops.selectedID
-        guard loops.removeSelected() else { return }
-        if let removedID { queueInputErrors[removedID] = nil; queueEstimates[removedID] = nil }
-        let selectedID = loops.selectedID
-        let cached = selectedID.flatMap { queueEstimates[$0] }
-        clearInputDrafts(); applySelectedLoop(); seek(settings.start)
-        if let selectedID { queueEstimates[selectedID] = cached; estimates = cached ?? [:] }
+        guard !isBusy, !showReview, !loops.ranges.isEmpty else { return }
+        keepingPlayback {
+            pause()
+            let removedID = loops.selectedID
+            guard loops.removeSelected() else { return }
+            if let removedID { queueInputErrors[removedID] = nil; queueEstimates[removedID] = nil }
+            let selectedID = loops.selectedID
+            let cached = selectedID.flatMap { queueEstimates[$0] }
+            clearInputDrafts(); applySelectedLoop()
+            // Deleting the last loop leaves the bare movie; the playhead stays where it is.
+            if selectedID != nil { seek(settings.start) }
+            if let selectedID { queueEstimates[selectedID] = cached; estimates = cached ?? [:] }
+        }
+    }
+
+    func setLoopColor(_ id: UUID, to colorIndex: Int) {
+        guard !isBusy, !showReview else { return }
+        loops.setColor(id, to: colorIndex)
     }
 
     func setLoopLength(_ seconds: Double) {
         guard !isBusy, !showReview, source != nil, seconds == 5 || seconds == 10 else { return }
-        pause(); defaultLoopLength = seconds
-        loops.resizeSelected(to: seconds)
-        clearInputDrafts(); applySelectedLoop()
+        keepingPlayback {
+            pause(); defaultLoopLength = seconds
+            loops.resizeSelected(to: seconds)
+            clearInputDrafts(); applySelectedLoop()
+        }
     }
+
+    /// The playhead as it stood when the drag began. During a drag the playhead is seeked to the
+    /// edge being dragged, so reading it live would make the loop snap to itself: every update
+    /// would find a target sitting exactly where the drag just put it, and the loop would stick.
+    private var dragPlayhead: Double?
 
     func beginLoopDrag(_ id: UUID) {
         guard !isBusy, !showReview, loops.ranges.contains(where: { $0.id == id }) else { return }
+        if dragPlayhead == nil { dragPlayhead = position }
         selectLoop(id, seekToStart: false)
         clearInputDrafts()
     }
 
-    func moveLoop(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double) {
+    /// The time a snap guide is drawn at while a loop is being dragged, and nil the rest of the time.
+    @Published private(set) var snapGuide: Double?
+
+    /// `tolerance` is how far a drag may sit from an edge and still stick, in seconds; the view
+    /// derives it from a pixel distance, so the feel is the same at any zoom or window width.
+    func moveLoop(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double, tolerance: Double = 0) {
         guard !isBusy, !showReview, source != nil else { return }
-        guard loops.move(id, originalStart: originalStart, originalEnd: originalEnd, by: delta) else { return }
+        let targets = loops.snapTargets(excluding: id, playhead: dragPlayhead ?? position)
+        let result = loops.move(id, originalStart: originalStart, originalEnd: originalEnd, by: delta, snappingTo: targets, tolerance: tolerance)
+        guard result.moved else { return }
+        snapGuide = result.guide
         applySelectedLoop()
+        seek(settings.start) // the playhead rides on A while a loop is dragged
     }
 
-    func dragLoopHandle(start: Bool, original: MovieLoop, by delta: Double) {
+    func endLoopDrag() { snapGuide = nil; dragPlayhead = nil }
+
+    func dragLoopHandle(start: Bool, original: MovieLoop, by delta: Double, tolerance: Double = 0) {
         guard !isBusy, !showReview, let source, delta.isFinite,
               loops.selectedID == original.id else { return }
+        let minimum = min(0.001, source.duration)
+        // One edge moves, so it snaps on its own: the opposite edge is not a candidate to shift to.
+        let dragged = (start ? original.start : original.end) + delta
+        let targets = loops.snapTargets(excluding: original.id, playhead: dragPlayhead ?? position)
+        let snapped = MovieLoops.snap(start: dragged, end: dragged, targets: targets, tolerance: tolerance)
+        let delta = snapped.map { $0.start - (start ? original.start : original.end) } ?? delta
+        snapGuide = snapped?.guide
+        var edit = settings
         if start {
-            moveLoop(original.id, originalStart: original.start, originalEnd: original.end, by: delta)
+            // A trims the loop's start with B held still, and the playhead follows A.
+            edit.start = max(0, min(original.start + delta, original.end - minimum))
+            settings = edit
+            seek(edit.start)
         } else {
-            let minimum = min(0.001, source.duration)
-            var edit = settings
             edit.end = min(source.duration, max(original.end + delta, edit.start + minimum))
             settings = edit
+            // B is exclusive, so show the frame just before it: the last one the loop keeps.
+            seek(max(edit.start, edit.end - minimum))
         }
     }
 
+    /// One nudge is a complete drag: it begins and ends, so the frozen playhead is released and
+    /// cannot leak into whatever the mouse drags next.
     func nudgeSelectedLoop(by seconds: Double) {
         guard let loop = loops.selected, !isBusy, !showReview else { return }
         beginLoopDrag(loop.id)
         moveLoop(loop.id, originalStart: loop.start, originalEnd: loop.end, by: seconds)
+        endLoopDrag()
     }
 
     private func applySelectedLoop() {
-        guard let loop = loops.selected else { return }
         cropAdjusting = false
         estimates = [:]
-        settings = loop.settings
+        // With no loop left, the settings span the whole movie so playback covers all of it.
+        if let loop = loops.selected { settings = loop.settings }
+        else if let source { isResetting = true; settings = EditSettings(source: source); isResetting = false; updateBoundaryObserver(); refreshColorPreview(for: generation) }
+        applyRate()
         schedulePlan()
     }
 
@@ -628,12 +787,14 @@ final class EditorModel: ObservableObject {
 
     func setCropAspectRatio(_ aspect: CropAspectRatio) {
         guard !isBusy, let source else { return }
-        pause(); clearInputDrafts()
-        var edit = settings
-        edit.cropAspectRatio = aspect
-        if aspect != .free { edit.lastLockedCropAspectRatio = aspect }
-        edit.crop = CropGeometry.fitted(edit.crop, aspect: aspect, sourceWidth: source.width, sourceHeight: source.height)
-        settings = edit
+        keepingPlayback {
+            pause(); clearInputDrafts()
+            var edit = settings
+            edit.cropAspectRatio = aspect
+            if aspect != .free { edit.lastLockedCropAspectRatio = aspect }
+            edit.crop = CropGeometry.fitted(edit.crop, aspect: aspect, sourceWidth: source.width, sourceHeight: source.height)
+            settings = edit
+        }
     }
 
     func toggleCropAspectLock() {
@@ -641,7 +802,7 @@ final class EditorModel: ObservableObject {
         setCropAspectRatio(locked ? .free : (settings.lastLockedCropAspectRatio ?? .original))
     }
 
-    func beginCrop() { guard !isBusy else { return }; pause(); settings.cropEnabled = true; cropAdjusting = true }
+    func beginCrop() { guard !isBusy, !loops.ranges.isEmpty else { return }; pause(); settings.cropEnabled = true; cropAdjusting = true }
     func doneCrop() { pause(); cropAdjusting = false }
     func resetCrop() {
         guard !isBusy, let source else { return }
@@ -651,15 +812,49 @@ final class EditorModel: ObservableObject {
 
     private func updateBoundaryObserver() {
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver); self.boundaryObserver = nil }
-        guard source != nil, playbackMode != .whole, settings.end > settings.start else { return }
+        guard source != nil, playbackMode.followsLoop, settings.end > settings.start else { return }
         boundaryObserver = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: settings.end + playbackOrigin, preferredTimescale: 60000))], queue: .main) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.wantsPlayback else { return }
-                if self.playbackMode == .repeatSelection { self.loopSelection() }
-                else { self.pause(); self.seek(self.settings.end) }
+                switch self.playbackMode {
+                case .repeatSelection: self.loopSelection()
+                case .allLoops: self.advanceToNextLoop()
+                default: self.pause(); self.seek(self.settings.end)
+                }
             }
         }
     }
+    /// True while every loop is queued to play, which is also when they all read as selected.
+    var playsAllLoops: Bool { playbackMode == .allLoops && !loops.ranges.isEmpty }
+
+    /// Turns on all-loops playback and starts at the first loop. The button beside the chips.
+    func playAllLoops() {
+        guard !isBusy, !showReview, source != nil, !loops.ranges.isEmpty else { return }
+        playbackMode = .allLoops
+        if let first = loops.ranges.first { selectLoop(first.id, seekToStart: true) }
+        if !wantsPlayback { togglePlayback() }
+    }
+
+    /// The next loop in timeline order, wrapping at the end. Selecting it applies its own
+    /// settings — speed included — and playback carries straight on into it.
+    private func advanceToNextLoop() {
+        guard playbackMode == .allLoops else { return }
+        guard !loops.ranges.isEmpty else {
+            // Nothing left to rotate through: stop cleanly instead of leaving wantsPlayback true
+            // against a player that has already come to a halt, which needs two clicks to restart.
+            playbackMode = .whole
+            pause()
+            return
+        }
+        guard !looping, wantsPlayback, !isBusy, !cropAdjusting, !showReview, source != nil else { return }
+        let index = loops.ranges.firstIndex { $0.id == loops.selectedID } ?? 0
+        let next = loops.ranges[(index + 1) % loops.ranges.count]
+        looping = true
+        selectLoop(next.id, seekToStart: true)
+        looping = false
+        if wantsPlayback { player.play(); player.rate = Float(speed); isPlaying = true }
+    }
+
     private func loopSelection() {
         guard !looping, wantsPlayback, !isBusy, !cropAdjusting, !showReview, source != nil, playbackMode == .repeatSelection else { return }
         looping = true
@@ -668,7 +863,7 @@ final class EditorModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.looping = false
-                if finished && self.wantsPlayback && self.playbackRevision == revision && self.generation == sourceGeneration && !self.isBusy && !self.showReview && !self.cropAdjusting && self.playbackMode == .repeatSelection { self.player.play(); self.isPlaying = true }
+                if finished && self.wantsPlayback && self.playbackRevision == revision && self.generation == sourceGeneration && !self.isBusy && !self.showReview && !self.cropAdjusting && self.playbackMode == .repeatSelection { self.player.play(); self.player.rate = Float(self.speed); self.isPlaying = true }
             }
         }
     }
@@ -782,7 +977,7 @@ final class EditorModel: ObservableObject {
                     try Task.checkCancellation()
                     guard try SourceIdentity(url: source.url) == source.identity else { throw MediaError.sourceChanged }
                     let trimmed = plan.settings.start > 0.001 || plan.settings.end < source.duration - 0.001
-                    let published = try OutputPublisher.publish(temporaryURL: temp, sourceURL: source.url, cropped: plan.settings.cropEnabled, trimmed: trimmed, directory: directory, extension: plan.fileExtension, loopNumber: number)
+                    let published = try OutputPublisher.publish(temporaryURL: temp, sourceURL: source.url, cropped: plan.settings.cropEnabled, trimmed: trimmed, directory: directory, extension: plan.fileExtension, loopNumber: number, speed: plan.settings.speed, options: filenameOptions)
                     result.url = published; results.append(result); completed += 1
                 }
                 progress = 1; status = "Saved \(completed) loop\(completed == 1 ? "" : "s") to \(directory.lastPathComponent)"

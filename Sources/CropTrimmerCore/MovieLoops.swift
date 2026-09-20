@@ -1,15 +1,17 @@
 import Foundation
 
-/// A queue entry with its own temporal, crop, and encoding settings.
+/// A queue entry with its own temporal, crop, and encoding settings, and its own color
+/// (a `LoopPalette` index) that marks it in the queue and on the timeline.
 public struct MovieLoop: Identifiable, Equatable, Sendable {
     public let id: UUID
     public fileprivate(set) var settings: EditSettings
+    public fileprivate(set) var colorIndex: Int
     public var start: Double { settings.start }
     public var end: Double { settings.end }
     public var duration: Double { end - start }
 
-    fileprivate init(start: Double, end: Double, settings: EditSettings) {
-        id = UUID(); self.settings = settings
+    fileprivate init(start: Double, end: Double, settings: EditSettings, colorIndex: Int) {
+        id = UUID(); self.settings = settings; self.colorIndex = colorIndex
         self.settings.start = start; self.settings.end = end
     }
     fileprivate mutating func setRange(start: Double, end: Double) {
@@ -17,20 +19,30 @@ public struct MovieLoop: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Owns up to three independent ranges and keeps every range inside the source.
+/// Owns any number of independent ranges — none at all for a freshly opened movie — and keeps
+/// every range inside the source.
 public struct MovieLoops: Equatable, Sendable {
-    public static let maximumCount = 3
     public private(set) var ranges: [MovieLoop] = []
     public private(set) var selectedID: UUID?
     public let sourceDuration: Double
     public var selected: MovieLoop? { ranges.first { $0.id == selectedID } }
 
-    public init(sourceDuration: Double = 0, defaultLength: Double = 5, settings: EditSettings = EditSettings()) {
+    /// `colorIndex` is the first loop's color; nil picks one at random. Pass `withFirstLoop: false`
+    /// for the bare movie the editor opens with, whose first loop comes from `add(length:at:)`.
+    public init(sourceDuration: Double = 0, defaultLength: Double = 5, settings: EditSettings = EditSettings(), colorIndex: Int? = nil, withFirstLoop: Bool = true) {
         self.sourceDuration = sourceDuration.isFinite && sourceDuration > 0 ? sourceDuration : 0
-        if self.sourceDuration > 0 {
-            let first = MovieLoop(start: 0, end: Self.length(defaultLength, within: self.sourceDuration), settings: settings)
+        if self.sourceDuration > 0, withFirstLoop {
+            let color = colorIndex.flatMap { LoopPalette.isValid($0) ? $0 : nil } ?? LoopPalette.randomIndex(avoiding: [])
+            let first = MovieLoop(start: 0, end: Self.length(defaultLength, within: self.sourceDuration), settings: settings, colorIndex: color)
             ranges = [first]; selectedID = first.id
         }
+    }
+
+    /// Recolors one loop; invalid palette indexes and unknown loops are refused.
+    @discardableResult public mutating func setColor(_ id: UUID, to colorIndex: Int) -> Bool {
+        guard LoopPalette.isValid(colorIndex), let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
+        ranges[index].colorIndex = colorIndex
+        return true
     }
 
     @discardableResult public mutating func select(_ id: UUID) -> Bool {
@@ -39,11 +51,29 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
-    /// New loops prefer the time after the selected loop. Near the end, use an
-    /// unused start position when possible; overlap is allowed and remains editable.
-    @discardableResult public mutating func add(length requestedLength: Double) -> Bool {
-        guard ranges.count < Self.maximumCount, sourceDuration > 0 else { return false }
+    /// The first loop starts at `playhead`, shortened to fit when the playhead is near the end.
+    /// Every later loop starts at the selected loop's out point (B), so pressing + repeatedly chains loops
+    /// end to end. Whatever remains after B — a full length or a fraction of a second — is the new
+    /// loop's range, running to the end of the movie when less than a full length is left. Only when
+    /// the selected loop already ends at the movie's end (nothing beyond float dust remains) does it
+    /// fall back to an unused spot; overlap is allowed and remains editable. The new loop's color is
+    /// `colorIndex`, or a random one whose hue no other loop uses.
+    @discardableResult public mutating func add(length requestedLength: Double, at playhead: Double = 0, settings: EditSettings = EditSettings(), colorIndex: Int? = nil) -> Bool {
+        guard sourceDuration > 0 else { return false }
         let length = Self.length(requestedLength, within: sourceDuration)
+        let color = colorIndex.flatMap { LoopPalette.isValid($0) ? $0 : nil } ?? LoopPalette.randomIndex(avoiding: ranges.map(\.colorIndex))
+        if ranges.isEmpty {
+            let latestStart = max(0, sourceDuration - Self.minimumLength)
+            let start = min(max(0, playhead.isNaN ? 0 : playhead), latestStart)
+            let loop = MovieLoop(start: start, end: min(start + length, sourceDuration), settings: settings, colorIndex: color)
+            ranges = [loop]; selectedID = loop.id
+            return true
+        }
+        if let out = selected?.end, sourceDuration - out > 0.001 {
+            let loop = MovieLoop(start: out, end: min(out + length, sourceDuration), settings: selected?.settings ?? EditSettings(), colorIndex: color)
+            ranges.append(loop); selectedID = loop.id
+            return true
+        }
         let latestStart = sourceDuration - length
         var start = min(selected?.end ?? 0, latestStart)
         if ranges.contains(where: { abs($0.start - start) < 0.001 && abs($0.duration - length) < 0.001 }), latestStart > 0 {
@@ -53,16 +83,23 @@ public struct MovieLoops: Equatable, Sendable {
                 start = (widest.0 + widest.1) / 2
             }
         }
-        let loop = MovieLoop(start: start, end: start + length, settings: selected?.settings ?? EditSettings())
+        let loop = MovieLoop(start: start, end: start + length, settings: selected?.settings ?? EditSettings(), colorIndex: color)
         ranges.append(loop); selectedID = loop.id
         return true
     }
 
-    @discardableResult public mutating func removeSelected() -> Bool {
-        guard ranges.count > 1, let index = ranges.firstIndex(where: { $0.id == selectedID }) else { return false }
+    /// Removes any loop, the last one included. Removing the selected loop selects its neighbour,
+    /// or nothing when none is left; removing another loop leaves the selection alone.
+    @discardableResult public mutating func remove(_ id: UUID) -> Bool {
+        guard let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
         ranges.remove(at: index)
-        selectedID = ranges[min(index, ranges.count - 1)].id
+        if selectedID == id { selectedID = ranges.isEmpty ? nil : ranges[min(index, ranges.count - 1)].id }
         return true
+    }
+
+    @discardableResult public mutating func removeSelected() -> Bool {
+        guard let selectedID else { return false }
+        return remove(selectedID)
     }
 
     @discardableResult public mutating func updateSelected(start: Double, end: Double) -> Bool {
@@ -87,17 +124,65 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
-    /// The drag's original range is used on every update, preventing cumulative
-    /// drift and preserving length when a pointer goes beyond the source bounds.
+    /// The shortest a loop gets when it is pushed against the end of the movie.
+    public static let minimumLength = 0.1
+
+    /// The drag's original range is used on every update, preventing cumulative drift. A loop pushed
+    /// past the end of the movie keeps its start and runs to the end, shortening instead of stopping;
+    /// dragging it back restores the original length.
     @discardableResult public mutating func move(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double) -> Bool {
         guard originalStart.isFinite, originalEnd.isFinite, delta.isFinite,
               originalStart >= 0, originalEnd > originalStart, originalEnd <= sourceDuration,
               let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
         let duration = originalEnd - originalStart
-        let start = min(max(0, originalStart + delta), sourceDuration - duration)
-        ranges[index].setRange(start: start, end: start + duration)
+        let latestStart = max(0, sourceDuration - min(duration, Self.minimumLength))
+        let start = min(max(0, originalStart + delta), latestStart)
+        ranges[index].setRange(start: start, end: min(start + duration, sourceDuration))
         selectedID = id
         return true
+    }
+
+    /// Times a dragged loop sticks to, Adobe-style: every other loop's A and B, the playhead, and
+    /// the movie's two ends. Sorted and de-duplicated; a loop never snaps to its own edges, which
+    /// would pin it where it started.
+    public func snapTargets(excluding id: UUID, playhead: Double) -> [Double] {
+        var targets: [Double] = [0, sourceDuration]
+        for loop in ranges where loop.id != id { targets.append(loop.start); targets.append(loop.end) }
+        if playhead.isFinite, playhead > 0, playhead < sourceDuration { targets.append(playhead) }
+        return targets.sorted().reduce(into: []) { result, value in
+            if result.last.map({ abs(value - $0) > 0.000001 }) ?? true { result.append(value) }
+        }
+    }
+
+    /// Slides a dragged range so whichever edge is nearest a target lands exactly on it, keeping the
+    /// range's length. Returns nil when no edge is within `tolerance`, so the drag is left untouched.
+    public static func snap(start: Double, end: Double, targets: [Double], tolerance: Double) -> (start: Double, end: Double, guide: Double)? {
+        guard tolerance > 0, start.isFinite, end.isFinite else { return nil }
+        var best: (distance: Double, shift: Double, guide: Double)?
+        for target in targets {
+            for edge in [start, end] {
+                let distance = abs(target - edge)
+                guard distance <= tolerance, distance < (best?.distance ?? .infinity) else { continue }
+                best = (distance, target - edge, target)
+            }
+        }
+        guard let best else { return nil }
+        return (start + best.shift, end + best.shift, best.guide)
+    }
+
+    /// `move` with snapping. `moved` says whether the loop actually moved — a rejected move and a
+    /// move that simply found nothing to stick to are different answers, and only the first should
+    /// stop a caller. `guide` is the time to draw a snap guide at. Snapping happens before the
+    /// end-of-movie clamp, so a loop pushed against the end still shortens rather than sticking.
+    @discardableResult public mutating func move(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double, snappingTo targets: [Double], tolerance: Double) -> (moved: Bool, guide: Double?) {
+        guard delta.isFinite, originalStart.isFinite, originalEnd.isFinite else { return (false, nil) }
+        let snapped = Self.snap(start: originalStart + delta, end: originalEnd + delta, targets: targets, tolerance: tolerance)
+        let effectiveDelta = snapped.map { $0.start - originalStart } ?? delta
+        guard move(id, originalStart: originalStart, originalEnd: originalEnd, by: effectiveDelta) else { return (false, nil) }
+        // A snap the clamp then overrode is not a snap; only report a guide the loop actually reached.
+        guard let guide = snapped?.guide, let moved = ranges.first(where: { $0.id == id }),
+              min(abs(moved.start - guide), abs(moved.end - guide)) < 0.000001 else { return (true, nil) }
+        return (true, guide)
     }
 
     @discardableResult public mutating func resizeSelected(to requestedLength: Double) -> Bool {
