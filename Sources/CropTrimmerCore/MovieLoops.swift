@@ -19,18 +19,19 @@ public struct MovieLoop: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Owns up to three independent ranges and keeps every range inside the source.
+/// Owns any number of independent ranges — none at all for a freshly opened movie — and keeps
+/// every range inside the source.
 public struct MovieLoops: Equatable, Sendable {
-    public static let maximumCount = 3
     public private(set) var ranges: [MovieLoop] = []
     public private(set) var selectedID: UUID?
     public let sourceDuration: Double
     public var selected: MovieLoop? { ranges.first { $0.id == selectedID } }
 
-    /// `colorIndex` is the first loop's color; nil picks one at random.
-    public init(sourceDuration: Double = 0, defaultLength: Double = 5, settings: EditSettings = EditSettings(), colorIndex: Int? = nil) {
+    /// `colorIndex` is the first loop's color; nil picks one at random. Pass `withFirstLoop: false`
+    /// for the bare movie the editor opens with, whose first loop comes from `add(length:at:)`.
+    public init(sourceDuration: Double = 0, defaultLength: Double = 5, settings: EditSettings = EditSettings(), colorIndex: Int? = nil, withFirstLoop: Bool = true) {
         self.sourceDuration = sourceDuration.isFinite && sourceDuration > 0 ? sourceDuration : 0
-        if self.sourceDuration > 0 {
+        if self.sourceDuration > 0, withFirstLoop {
             let color = colorIndex.flatMap { LoopPalette.isValid($0) ? $0 : nil } ?? LoopPalette.randomIndex(avoiding: [])
             let first = MovieLoop(start: 0, end: Self.length(defaultLength, within: self.sourceDuration), settings: settings, colorIndex: color)
             ranges = [first]; selectedID = first.id
@@ -50,16 +51,24 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
-    /// A new loop starts at the selected loop's out point (B), so pressing + repeatedly chains loops
+    /// The first loop starts at `playhead`, shortened to fit when the playhead is near the end.
+    /// Every later loop starts at the selected loop's out point (B), so pressing + repeatedly chains loops
     /// end to end. Whatever remains after B — a full length or a fraction of a second — is the new
     /// loop's range, running to the end of the movie when less than a full length is left. Only when
     /// the selected loop already ends at the movie's end (nothing beyond float dust remains) does it
     /// fall back to an unused spot; overlap is allowed and remains editable. The new loop's color is
     /// `colorIndex`, or a random one whose hue no other loop uses.
-    @discardableResult public mutating func add(length requestedLength: Double, colorIndex: Int? = nil) -> Bool {
-        guard ranges.count < Self.maximumCount, sourceDuration > 0 else { return false }
+    @discardableResult public mutating func add(length requestedLength: Double, at playhead: Double = 0, settings: EditSettings = EditSettings(), colorIndex: Int? = nil) -> Bool {
+        guard sourceDuration > 0 else { return false }
         let length = Self.length(requestedLength, within: sourceDuration)
         let color = colorIndex.flatMap { LoopPalette.isValid($0) ? $0 : nil } ?? LoopPalette.randomIndex(avoiding: ranges.map(\.colorIndex))
+        if ranges.isEmpty {
+            let latestStart = max(0, sourceDuration - Self.minimumLength)
+            let start = min(max(0, playhead.isNaN ? 0 : playhead), latestStart)
+            let loop = MovieLoop(start: start, end: min(start + length, sourceDuration), settings: settings, colorIndex: color)
+            ranges = [loop]; selectedID = loop.id
+            return true
+        }
         if let out = selected?.end, sourceDuration - out > 0.001 {
             let loop = MovieLoop(start: out, end: min(out + length, sourceDuration), settings: selected?.settings ?? EditSettings(), colorIndex: color)
             ranges.append(loop); selectedID = loop.id
@@ -79,12 +88,12 @@ public struct MovieLoops: Equatable, Sendable {
         return true
     }
 
-    /// Removes any loop but the last one. Removing the selected loop selects its neighbour;
-    /// removing another loop leaves the selection alone.
+    /// Removes any loop, the last one included. Removing the selected loop selects its neighbour,
+    /// or nothing when none is left; removing another loop leaves the selection alone.
     @discardableResult public mutating func remove(_ id: UUID) -> Bool {
-        guard ranges.count > 1, let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
+        guard let index = ranges.firstIndex(where: { $0.id == id }) else { return false }
         ranges.remove(at: index)
-        if selectedID == id { selectedID = ranges[min(index, ranges.count - 1)].id }
+        if selectedID == id { selectedID = ranges.isEmpty ? nil : ranges[min(index, ranges.count - 1)].id }
         return true
     }
 

@@ -100,6 +100,9 @@ struct EditorView: View {
                 .disabled(!model.canSelectNextLoop)
             transportButton("Forward 5 seconds", "goforward.5") { model.jump(5) }
             playbackModeButton
+            Picker("Playback speed", selection: $model.playbackRate) {
+                ForEach(EditorModel.playbackRates, id: \.self) { Text(rateLabel($0)).tag($0) }
+            }.labelsHidden().fixedSize().help("Playback speed")
             Spacer(minLength: 8)
             // Fixed widths sum to under the 493 pt this row gets at the 820 pt minimum window; the timestamp
             // keeps its full width and the spacer absorbs any squeeze.
@@ -124,6 +127,8 @@ struct EditorView: View {
             Picker("Playback", selection: $model.playbackMode) { ForEach(PlaybackMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.inline)
         }
     }
+
+    private func rateLabel(_ rate: Double) -> String { rate.formatted(.number.precision(.fractionLength(0...2))) + "×" }
 
     private func modeSymbol(_ mode: PlaybackMode) -> String {
         switch mode { case .repeatSelection: "repeat"; case .once: "arrow.right.to.line"; case .whole: "film" }
@@ -153,11 +158,10 @@ struct EditorView: View {
                     .help("Loop \(index + 1): \(timeLabel(loop.start)) – \(timeLabel(loop.end))")
                 }
                 Button(action: model.addLoop) { Image(systemName: "plus") }
-                    .disabled(model.loops.ranges.count >= MovieLoops.maximumCount)
-                    .help("Add a \(Int(model.defaultLoopLength))-second loop, up to three loops")
+                    .help(model.loops.ranges.isEmpty ? "Add a \(Int(model.defaultLoopLength))-second loop starting at the playhead" : "Add a \(Int(model.defaultLoopLength))-second loop starting at the selected loop's B")
                     .accessibilityLabel("Add loop")
                 Button(action: model.removeLoop) { Image(systemName: "trash") }
-                    .disabled(model.loops.ranges.count < 2)
+                    .disabled(model.loops.ranges.isEmpty)
                     .help("Delete selected loop").accessibilityLabel("Delete selected loop")
                 Spacer(minLength: 6)
                 Text("Length").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -172,7 +176,7 @@ struct EditorView: View {
                 Button("A") { NSEvent.modifierFlags.contains(.shift) ? model.setStart() : model.recallStart() }.help("Recall A · Shift-click to set A (I)")
                 Text(timeLabel(model.settings.start)).monospacedDigit()
                 Spacer()
-                Text("Loop \(model.selectedLoopNumber) · \(timeLabel(model.settings.duration)) selected").foregroundStyle(LoopColors.onDark(selectedColor)).monospacedDigit()
+                Text(model.loops.ranges.isEmpty ? "Whole movie" : "Loop \(model.selectedLoopNumber) · \(timeLabel(model.settings.duration)) selected").foregroundStyle(model.loops.ranges.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(LoopColors.onDark(selectedColor))).monospacedDigit()
                 Spacer()
                 Text(timeLabel(model.settings.end)).monospacedDigit()
                 Button("B") { NSEvent.modifierFlags.contains(.shift) ? model.setEnd() : model.recallEnd() }.help("Recall B · Shift-click to set B (O)")
@@ -199,7 +203,7 @@ struct EditorView: View {
                 else {
                     Button("Export Queue (\(model.loops.ranges.count))", action: model.exportQueue)
                         .frame(maxWidth: .infinity).buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(model.source == nil || model.cropAdjusting || model.hasInputErrors)
+                        .disabled(model.source == nil || model.loops.ranges.isEmpty || model.cropAdjusting || model.hasInputErrors)
                 }
             }.padding(16)
         }.background(Color.white.opacity(0.035))
@@ -262,10 +266,9 @@ struct EditorView: View {
                 Spacer()
                 Button(action: model.addLoop) { Image(systemName: "plus") }
                     .accessibilityLabel("Add queue loop")
-                    .disabled(model.loops.ranges.count >= MovieLoops.maximumCount)
                 Button(action: model.removeLoop) { Image(systemName: "trash") }
                     .help("Delete selected loop").accessibilityLabel("Delete selected queue loop")
-                    .disabled(model.loops.ranges.count < 2)
+                    .disabled(model.loops.ranges.isEmpty)
             }
             VStack(alignment: .leading, spacing: LoopPanel.spacing) {
                 ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
@@ -476,14 +479,15 @@ private struct LoopHeader: View {
     @FocusState private var focused: Bool
     private var selected: Bool { model.loops.selectedID == loop.id }
 
-    private var barWidth: CGFloat {
-        let span = timelineWidth * CGFloat(loop.duration / sourceDuration)
-        return min(timelineWidth, max(44, span))
-    }
+    /// The drawn bar spans exactly A…B, so loops chained end to end sit flush on the timeline.
+    private var spanWidth: CGFloat { min(timelineWidth, max(2, timelineWidth * CGFloat(loop.duration / sourceDuration))) }
+    private var spanLeft: CGFloat { min(timelineWidth * CGFloat(loop.start / sourceDuration), timelineWidth - spanWidth) }
+
+    /// The grab area never gets narrower than 44 pt, however short the loop is drawn.
+    private var barWidth: CGFloat { min(timelineWidth, max(44, spanWidth)) }
 
     private var barLeft: CGFloat {
-        let midpoint = timelineWidth * CGFloat((loop.start + loop.end) / sourceDuration) / 2
-        return max(0, min(midpoint - barWidth / 2, timelineWidth - barWidth))
+        max(0, min(spanLeft + spanWidth / 2 - barWidth / 2, timelineWidth - barWidth))
     }
 
     var body: some View {
@@ -494,14 +498,19 @@ private struct LoopHeader: View {
     }
 
     private var headerLabel: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .bold)).rotationEffect(.degrees(90))
-            Text(barWidth > 75 ? "Loop \(number)" : String(number)).font(.system(size: 12, weight: .semibold))
+        ZStack(alignment: .leading) {
+            Color.clear
+            HStack(spacing: 5) {
+                if spanWidth >= 44 { Image(systemName: "line.3.horizontal").font(.system(size: 9, weight: .bold)).rotationEffect(.degrees(90)) }
+                if spanWidth >= 20 { Text(spanWidth > 75 ? "Loop \(number)" : String(number)).font(.system(size: 12, weight: .semibold)) }
+            }
+            .frame(width: spanWidth, height: 20)
+            .foregroundStyle(selected ? LoopColors.text(on: loop.colorIndex) : LoopColors.onDark(loop.colorIndex))
+            .background(selected ? LoopColors.fill(loop.colorIndex) : LoopColors.fill(loop.colorIndex).opacity(0.2), in: RoundedRectangle(cornerRadius: min(3, spanWidth / 2)))
+            .overlay(RoundedRectangle(cornerRadius: min(3, spanWidth / 2)).stroke(focused ? Color.white : LoopColors.fill(loop.colorIndex).opacity(selected ? 0 : 0.55), lineWidth: 1))
+            .offset(x: spanLeft - barLeft)
         }
         .frame(width: barWidth, height: 20)
-        .foregroundStyle(selected ? LoopColors.text(on: loop.colorIndex) : LoopColors.onDark(loop.colorIndex))
-        .background(selected ? LoopColors.fill(loop.colorIndex) : LoopColors.fill(loop.colorIndex).opacity(0.2), in: RoundedRectangle(cornerRadius: 3))
-        .overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? Color.white : LoopColors.fill(loop.colorIndex).opacity(selected ? 0 : 0.55), lineWidth: 1))
         .contentShape(Rectangle())
     }
 
@@ -516,7 +525,6 @@ private struct LoopHeader: View {
             .onKeyPress(keys: [.delete, .deleteForward], phases: .down) { _ in model.removeLoop(loop.id); return .handled }
             .contextMenu {
                 Button("Delete Loop \(number)", systemImage: "trash", role: .destructive) { model.removeLoop(loop.id) }
-                    .disabled(model.loops.ranges.count < 2)
             }
             .accessibilityLabel("Move Loop \(number)")
             .accessibilityValue("\(timeLabel(loop.start)) to \(timeLabel(loop.end)), \(timeLabel(loop.duration)) long" + (selected ? ", selected" : ""))

@@ -14,6 +14,15 @@ final class EditorModel: ObservableObject {
     @Published var position: Double = 0
     @Published var isPlaying = false
     @Published var playbackMode: PlaybackMode = .repeatSelection { didSet { updateBoundaryObserver() } }
+    static let playbackRates: [Double] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]
+    /// `defaultRate` is what `play()` starts at, so every resume and every A–B repeat keeps the speed.
+    @Published var playbackRate: Double = 1 {
+        didSet {
+            guard Self.playbackRates.contains(playbackRate) else { playbackRate = oldValue; return }
+            player.defaultRate = Float(playbackRate)
+            if wantsPlayback, player.timeControlStatus != .paused { player.rate = Float(playbackRate) }
+        }
+    }
     @Published var volume: Double = 1 { didSet { player.volume = Float(volume) } }
     @Published var muted = false { didSet { player.isMuted = muted } }
     @Published var cropAdjusting = false
@@ -355,7 +364,8 @@ final class EditorModel: ObservableObject {
                 playbackOrigin = origin
                 source = inspected
                 isResetting = true
-                loops = snapshot?.loops ?? MovieLoops(sourceDuration: inspected.duration, defaultLength: defaultLoopLength, settings: EditSettings(source: inspected))
+                // A movie opens bare: the whole timeline plays, and + puts the first loop at the playhead.
+                loops = snapshot?.loops ?? MovieLoops(sourceDuration: inspected.duration, withFirstLoop: false)
                 settings = loops.selected?.settings ?? EditSettings(source: inspected)
                 isResetting = false
                 player.replaceCurrentItem(with: AVPlayerItem(asset: asset))
@@ -492,14 +502,17 @@ final class EditorModel: ObservableObject {
     func recallStart() { keepingPlayback { pause(); seek(settings.start) } }
     func recallEnd() { pause(); seek(settings.end) }
     func setStart() {
+        // With no loop yet, I marks the first one's A at the playhead, exactly as + does.
+        guard !loops.ranges.isEmpty else { addLoop(); return }
         guard !isBusy, position < settings.end else { status = "Start must be before the end."; return }
         settings.start = position
     }
     func setEnd() {
+        guard !loops.ranges.isEmpty else { status = "Add a loop with + first."; return }
         guard !isBusy, position > settings.start, let source else { status = "End must be after the start."; return }
         settings.end = min(position, source.duration)
     }
-    func resetRange() { guard !isBusy, let source else { return }; timeInputErrors = [:]; timeInputRevision = UUID(); settings.start = 0; settings.end = source.duration }
+    func resetRange() { guard !isBusy, let source, !loops.ranges.isEmpty else { return }; timeInputErrors = [:]; timeInputRevision = UUID(); settings.start = 0; settings.end = source.duration }
     func selectLoop(_ id: UUID, seekToStart: Bool = true) {
         guard !isBusy, !showReview, source != nil, loops.ranges.contains(where: { $0.id == id }) else { return }
         keepingPlayback {
@@ -546,10 +559,10 @@ final class EditorModel: ObservableObject {
     }
 
     func addLoop() {
-        guard !isBusy, !showReview, source != nil, loops.ranges.count < MovieLoops.maximumCount else { return }
+        guard !isBusy, !showReview, let source else { return }
         keepingPlayback {
             pause()
-            guard loops.add(length: defaultLoopLength) else { return }
+            guard loops.add(length: defaultLoopLength, at: position, settings: EditSettings(source: source)) else { return }
             clearInputDrafts(); applySelectedLoop(); seek(settings.start)
         }
     }
@@ -557,7 +570,7 @@ final class EditorModel: ObservableObject {
     /// Deletes any loop, not just the selected one; the trash buttons on queue cards and loop bars call this.
     /// Deleting an unselected loop leaves the selection, the playhead and playback alone.
     func removeLoop(_ id: UUID) {
-        guard !isBusy, !showReview, loops.ranges.count > 1, loops.ranges.contains(where: { $0.id == id }) else { return }
+        guard !isBusy, !showReview, loops.ranges.contains(where: { $0.id == id }) else { return }
         if loops.selectedID == id { removeLoop(); return }
         guard loops.remove(id) else { return }
         queueInputErrors[id] = nil; queueEstimates[id] = nil
@@ -565,7 +578,7 @@ final class EditorModel: ObservableObject {
     }
 
     func removeLoop() {
-        guard !isBusy, !showReview, loops.ranges.count > 1 else { return }
+        guard !isBusy, !showReview, !loops.ranges.isEmpty else { return }
         keepingPlayback {
             pause()
             let removedID = loops.selectedID
@@ -573,7 +586,9 @@ final class EditorModel: ObservableObject {
             if let removedID { queueInputErrors[removedID] = nil; queueEstimates[removedID] = nil }
             let selectedID = loops.selectedID
             let cached = selectedID.flatMap { queueEstimates[$0] }
-            clearInputDrafts(); applySelectedLoop(); seek(settings.start)
+            clearInputDrafts(); applySelectedLoop()
+            // Deleting the last loop leaves the bare movie; the playhead stays where it is.
+            if selectedID != nil { seek(settings.start) }
             if let selectedID { queueEstimates[selectedID] = cached; estimates = cached ?? [:] }
         }
     }
@@ -630,10 +645,11 @@ final class EditorModel: ObservableObject {
     }
 
     private func applySelectedLoop() {
-        guard let loop = loops.selected else { return }
         cropAdjusting = false
         estimates = [:]
-        settings = loop.settings
+        // With no loop left, the settings span the whole movie so playback covers all of it.
+        if let loop = loops.selected { settings = loop.settings }
+        else if let source { isResetting = true; settings = EditSettings(source: source); isResetting = false; updateBoundaryObserver(); refreshColorPreview(for: generation) }
         schedulePlan()
     }
 
@@ -656,7 +672,7 @@ final class EditorModel: ObservableObject {
         setCropAspectRatio(locked ? .free : (settings.lastLockedCropAspectRatio ?? .original))
     }
 
-    func beginCrop() { guard !isBusy else { return }; pause(); settings.cropEnabled = true; cropAdjusting = true }
+    func beginCrop() { guard !isBusy, !loops.ranges.isEmpty else { return }; pause(); settings.cropEnabled = true; cropAdjusting = true }
     func doneCrop() { pause(); cropAdjusting = false }
     func resetCrop() {
         guard !isBusy, let source else { return }

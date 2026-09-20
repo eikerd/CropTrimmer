@@ -82,6 +82,13 @@ final class EditorIntegrationTests: XCTestCase {
         try await waitUntil { !model.isBusy }
         XCTAssertNotNil(model.source, model.errorMessage ?? "Open failed")
         try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+        // A movie opens bare: no default loop, the whole timeline in play.
+        XCTAssertTrue(model.loops.ranges.isEmpty)
+        XCTAssertEqual(model.settings.start, 0); XCTAssertEqual(model.settings.end, model.source?.duration)
+        // + puts the first loop's A at the playhead.
+        model.seek(2); model.addLoop()
+        XCTAssertEqual(model.loops.selected?.start, 2); XCTAssertEqual(model.loops.selected?.end, 7)
+        XCTAssertEqual(model.position, 2)
         model.settings.start = 1; model.settings.end = 3
         let handleOriginal = try XCTUnwrap(model.loops.selected)
         model.beginLoopDrag(handleOriginal.id)
@@ -132,6 +139,11 @@ final class EditorIntegrationTests: XCTestCase {
         model.togglePlayback()
         XCTAssertFalse(model.cropAdjusting)
         try await waitUntil { model.isPlaying && model.position > 1.2 }
+        model.playbackRate = 0.5
+        XCTAssertEqual(model.player.rate, 0.5, "A new speed applies at once while playing")
+        model.playbackRate = 3
+        XCTAssertEqual(model.playbackRate, 0.5, "Speeds outside the menu are refused")
+        model.playbackRate = 1
         model.togglePlayback()
         XCTAssertFalse(model.isPlaying)
         model.stop()

@@ -35,7 +35,6 @@ struct QueueLoopCard: View {
         .contextMenu {
             Button("Set loop to whole movie", action: resetRange)
             Button("Delete Loop \(number)", systemImage: "trash", role: .destructive) { model.removeLoop(loop.id) }
-                .disabled(model.loops.ranges.count < 2)
         }
     }
 
@@ -54,7 +53,6 @@ struct QueueLoopCard: View {
             }.help("Duration in seconds").accessibilityLabel("Duration \(queueSeconds(edit.duration)) seconds")
             Button { model.removeLoop(loop.id) } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
-                .disabled(model.loops.ranges.count < 2)
                 .help("Delete Loop \(number)").accessibilityLabel("Delete Loop \(number)")
         }
     }
