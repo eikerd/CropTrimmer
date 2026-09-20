@@ -411,5 +411,59 @@ final class EditorIntegrationTests: XCTestCase {
             try await waitUntil({ model.isPlaying }, timeout: 3)
         }
         model.pause()
+
+        // Deleting every loop while play-all runs must leave the mode, not sit in it with a
+        // player that has quietly stopped — that state needed two clicks to start playing again.
+        model.playAllLoops()
+        try await waitUntil({ model.isPlaying }, timeout: 3)
+        for id in model.loops.ranges.map(\.id) { model.removeLoop(id) }
+        XCTAssertTrue(model.loops.ranges.isEmpty)
+        model.seek(11.5)
+        try await waitUntil({ !model.isPlaying || model.playbackMode != .allLoops }, timeout: 8)
+        XCTAssertNotEqual(model.playbackMode, .allLoops, "Play-all steps aside once there is nothing to rotate through")
+        model.togglePlayback()
+        try await waitUntil({ model.isPlaying }, timeout: 3)
+        XCTAssertTrue(model.isPlaying, "One click restarts playback, not two")
+        model.pause()
+    }
+
+    /// A keyboard nudge is a whole drag. If it never ends, the playhead it froze leaks into the
+    /// next mouse drag and that drag snaps to a stale position.
+    @MainActor
+    func testAKeyboardNudgeDoesNotLeaveAFrozenPlayheadBehind() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-nudge-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Nudge.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "30", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy && model.source != nil }
+
+        model.seek(0)
+        model.addLoop()
+        let loop = try XCTUnwrap(model.loops.selected)
+        XCTAssertNil(model.updateLoop(id: loop.id, settings: {
+            var edit = loop.settings; edit.start = 20; edit.end = 21; return edit
+        }()))
+        // Nudge with the playhead parked just short of where the next drag will land, so a
+        // playhead left frozen here is close enough to pull that drag onto it.
+        model.seek(19.85)
+        model.nudgeSelectedLoop(by: 0.1)
+        let original = try XCTUnwrap(model.loops.selected)
+        // The live playhead moves far away; only a leaked 19.85 could still act as a target.
+        model.seek(5)
+        model.beginLoopDrag(original.id)
+        model.moveLoop(original.id, originalStart: original.start, originalEnd: original.end, by: -0.2, tolerance: 0.5)
+        XCTAssertEqual(try XCTUnwrap(model.loops.selected).start, original.start - 0.2, accuracy: 0.000001,
+                       "The drag followed the pointer instead of snapping to a playhead left frozen by the nudge")
+        model.endLoopDrag()
     }
 }

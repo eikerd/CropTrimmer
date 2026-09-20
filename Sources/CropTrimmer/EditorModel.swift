@@ -32,6 +32,9 @@ final class EditorModel: ObservableObject {
     @Published var preferencesTab: PreferencesTab = .general
     /// Set by the view that hosts the Settings scene, so the model can open it (e.g. for `?`).
     var openPreferences: (() -> Void)?
+    /// True while the Settings window is on screen, so the editor's global key monitor keeps its
+    /// hands off keystrokes meant for a preference control.
+    @Published var preferencesIsOpen = false
     var selectedLoopNumber: Int { (loops.ranges.firstIndex { $0.id == loops.selectedID } ?? 0) + 1 }
     @Published var position: Double = 0
     @Published var isPlaying = false
@@ -46,7 +49,9 @@ final class EditorModel: ObservableObject {
         guard !isBusy, !showReview, EditSettings.speeds.contains(where: { abs($0 - value) < 0.000001 }) else { return }
         if let id = loops.selectedID, var edit = loops.ranges.first(where: { $0.id == id })?.settings {
             edit.speed = value
-            keepingPlayback { _ = updateLoop(id: id, settings: edit) }
+            keepingPlayback {
+                if let reason = updateLoop(id: id, settings: edit) { status = reason }
+            }
         } else {
             monitorSpeed = value
         }
@@ -136,12 +141,19 @@ final class EditorModel: ObservableObject {
                 guard let self, self.source != nil, !self.showReview, !self.isBusy,
                       NSApp.keyWindow?.attachedSheet == nil,
                       !(NSApp.keyWindow is NSPanel),
+                      // The Settings window is an ordinary NSWindow, so it has to be named rather
+                      // than recognised by class; its controls keep their own keys.
+                      !self.preferencesIsOpen,
                       !(NSApp.keyWindow?.firstResponder is NSTextView) else { return false }
                 let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
                 // Arrow-key playhead nudges: 1s bare, 5s with Shift, 0.2s with Option. A focused
                 // loop header's own onKeyPress (0.1s/1s) takes priority over these.
                 if let arrow = event.specialKey, arrow == .leftArrow || arrow == .rightArrow {
-                    guard !self.loopHeaderHasKeyboardFocus, mods.isSubset(of: [.shift, .option]) else { return false }
+                    // A focused AppKit control (slider, radio group, popup) adjusts itself with the
+                    // arrow keys; the playhead only gets them when nothing else wants them.
+                    guard !self.loopHeaderHasKeyboardFocus,
+                          !(NSApp.keyWindow?.firstResponder is NSControl),
+                          mods.isSubset(of: [.shift, .option]) else { return false }
                     let sign: Double = arrow == .leftArrow ? -1 : 1
                     let seconds = mods.contains(.shift) ? 5.0 : (mods.contains(.option) ? 0.2 : 1.0)
                     self.jump(sign * seconds); return true
@@ -685,9 +697,9 @@ final class EditorModel: ObservableObject {
     func moveLoop(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double, tolerance: Double = 0) {
         guard !isBusy, !showReview, source != nil else { return }
         let targets = loops.snapTargets(excluding: id, playhead: dragPlayhead ?? position)
-        let guide = loops.move(id, originalStart: originalStart, originalEnd: originalEnd, by: delta, snappingTo: targets, tolerance: tolerance)
-        guard loops.ranges.contains(where: { $0.id == id }) else { return }
-        snapGuide = guide
+        let result = loops.move(id, originalStart: originalStart, originalEnd: originalEnd, by: delta, snappingTo: targets, tolerance: tolerance)
+        guard result.moved else { return }
+        snapGuide = result.guide
         applySelectedLoop()
         seek(settings.start) // the playhead rides on A while a loop is dragged
     }
@@ -718,10 +730,13 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// One nudge is a complete drag: it begins and ends, so the frozen playhead is released and
+    /// cannot leak into whatever the mouse drags next.
     func nudgeSelectedLoop(by seconds: Double) {
         guard let loop = loops.selected, !isBusy, !showReview else { return }
         beginLoopDrag(loop.id)
         moveLoop(loop.id, originalStart: loop.start, originalEnd: loop.end, by: seconds)
+        endLoopDrag()
     }
 
     private func applySelectedLoop() {
@@ -789,8 +804,15 @@ final class EditorModel: ObservableObject {
     /// The next loop in timeline order, wrapping at the end. Selecting it applies its own
     /// settings — speed included — and playback carries straight on into it.
     private func advanceToNextLoop() {
-        guard !looping, wantsPlayback, !isBusy, !cropAdjusting, !showReview, source != nil,
-              playbackMode == .allLoops, !loops.ranges.isEmpty else { return }
+        guard playbackMode == .allLoops else { return }
+        guard !loops.ranges.isEmpty else {
+            // Nothing left to rotate through: stop cleanly instead of leaving wantsPlayback true
+            // against a player that has already come to a halt, which needs two clicks to restart.
+            playbackMode = .whole
+            pause()
+            return
+        }
+        guard !looping, wantsPlayback, !isBusy, !cropAdjusting, !showReview, source != nil else { return }
         let index = loops.ranges.firstIndex { $0.id == loops.selectedID } ?? 0
         let next = loops.ranges[(index + 1) % loops.ranges.count]
         looping = true

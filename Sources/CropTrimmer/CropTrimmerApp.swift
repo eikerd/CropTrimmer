@@ -34,7 +34,7 @@ struct CropTrimmerApp: App {
                 Button("Set End (O)", action: model.setEnd).keyboardShortcut("o", modifiers: [.command, .shift]).disabled(model.source == nil || model.isBusy || model.showReview)
                 Button("Go to Start", action: model.recallStart).disabled(model.source == nil || model.isBusy || model.showReview)
                 Button("Go to End", action: model.recallEnd).disabled(model.source == nil || model.isBusy || model.showReview)
-                Button("Reset Range", action: model.resetRange).disabled(model.source == nil || model.isBusy || model.showReview)
+                Button("Reset Range", action: model.resetRange).disabled(model.source == nil || model.isBusy || model.showReview || model.loops.ranges.isEmpty)
                 Divider()
                 ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
                     let number = index + 1
@@ -49,7 +49,7 @@ struct CropTrimmerApp: App {
                 Divider()
                 Button("Adjust Crop", action: model.beginCrop).disabled(model.source == nil || model.isBusy || model.showReview || model.loops.ranges.isEmpty)
                 Button("Export Selected Loop", action: model.export).keyboardShortcut("e", modifiers: .command).disabled(model.plan == nil || model.isBusy || model.showReview || model.cropAdjusting || model.loops.selectedID.map(model.hasErrors(for:)) ?? true)
-                Button("Export Queue", action: model.exportQueue).disabled(model.source == nil || model.isBusy || model.showReview || model.cropAdjusting || model.hasInputErrors)
+                Button("Export Queue", action: model.exportQueue).disabled(model.source == nil || model.isBusy || model.showReview || model.cropAdjusting || model.hasInputErrors || model.loops.ranges.isEmpty)
                 Button("Show Exports") { model.showReview = true }.disabled(model.results.isEmpty || model.isBusy)
             }
             CommandGroup(replacing: .help) {
@@ -60,7 +60,6 @@ struct CropTrimmerApp: App {
                     alert.runModal()
                 }
                 Button("Keyboard Shortcuts…") { model.preferencesTab = .shortcuts; openSettings() }
-                    .keyboardShortcut("/", modifiers: [])
             }
         }
         Settings {

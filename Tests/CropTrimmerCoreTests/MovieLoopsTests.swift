@@ -210,11 +210,14 @@ final class MovieLoopsTests: XCTestCase {
         let dragged = try XCTUnwrap(loops.selectedID)
         let original = try XCTUnwrap(loops.selected)
         // Dropped 0.2s short of the first loop's B, it lands flush against it.
-        let guide = loops.move(dragged, originalStart: original.start, originalEnd: original.end, by: -0.2, snappingTo: loops.snapTargets(excluding: dragged, playhead: 0), tolerance: 0.5)
-        XCTAssertEqual(guide, 15)
+        let snapped = loops.move(dragged, originalStart: original.start, originalEnd: original.end, by: -0.2, snappingTo: loops.snapTargets(excluding: dragged, playhead: 0), tolerance: 0.5)
+        XCTAssertTrue(snapped.moved); XCTAssertEqual(snapped.guide, 15)
         XCTAssertEqual(loops.selected?.start, 15); XCTAssertEqual(loops.selected?.end, 20)
         // Far from everything, the move is untouched and reports no guide.
-        XCTAssertNil(loops.move(dragged, originalStart: original.start, originalEnd: original.end, by: 10, snappingTo: loops.snapTargets(excluding: dragged, playhead: 0), tolerance: 0.5))
+        let free = loops.move(dragged, originalStart: original.start, originalEnd: original.end, by: 10, snappingTo: loops.snapTargets(excluding: dragged, playhead: 0), tolerance: 0.5)
+        XCTAssertTrue(free.moved, "Moving with nothing nearby still moves"); XCTAssertNil(free.guide)
+        let rejected = loops.move(dragged, originalStart: original.start, originalEnd: original.end, by: .nan, snappingTo: [], tolerance: 0.5)
+        XCTAssertFalse(rejected.moved, "A non-finite delta is refused, and is not the same answer as no snap")
         XCTAssertEqual(loops.selected?.start, 25)
     }
 }

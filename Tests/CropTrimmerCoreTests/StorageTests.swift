@@ -95,3 +95,51 @@ final class FilenameOptionsTests: XCTestCase {
         XCTAssertFalse(restored.includeLoopNumber); XCTAssertTrue(restored.includeSpeed); XCTAssertFalse(restored.includeTrim)
     }
 }
+
+final class OutputPublisherOwnershipTests: XCTestCase {
+    /// `standardizedFileURL` strips a `/private` prefix only once the file exists, so a temporary
+    /// registered before the encode was looked up under a different spelling after it. Every
+    /// export into /private/tmp or /private/var failed with "does not belong to this job or
+    /// destination" and left its temporary behind, because `discard` missed it for the same reason.
+    func testPublishAcceptsATemporaryWhoseSpellingChangedOnceItExisted() throws {
+        let directory = URL(fileURLWithPath: "/private/tmp/CropTrimmer-ownership-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("Clip.mp4")
+        try Data("source".utf8).write(to: source)
+
+        let temporary = OutputPublisher.temporaryURL(in: directory, extension: "mp4")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path), "Registered before the file exists")
+        try Data("export".utf8).write(to: temporary)
+
+        let published = try OutputPublisher.publish(temporaryURL: temporary, sourceURL: source, cropped: false,
+                                                   trimmed: true, directory: directory, extension: "mp4", loopNumber: 1)
+        XCTAssertEqual(published.lastPathComponent, "Clip - loop 01 - trim.mp4")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: published.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path), "The temporary was moved, not copied")
+    }
+
+    /// The same mismatch made `discard` silently keep the file instead of cleaning it up.
+    func testDiscardRemovesATemporaryUnderPrivate() throws {
+        let directory = URL(fileURLWithPath: "/private/tmp/CropTrimmer-discard-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let temporary = OutputPublisher.temporaryURL(in: directory, extension: "mp4")
+        try Data("export".utf8).write(to: temporary)
+        OutputPublisher.discard(temporaryURL: temporary)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
+    }
+
+    /// A path this process never issued is still refused, which is the point of the check.
+    func testPublishStillRefusesAFileItNeverIssued() throws {
+        let directory = URL(fileURLWithPath: "/private/tmp/CropTrimmer-foreign-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("Clip.mp4")
+        try Data("source".utf8).write(to: source)
+        let foreign = directory.appendingPathComponent("not-ours.mp4")
+        try Data("export".utf8).write(to: foreign)
+        XCTAssertThrowsError(try OutputPublisher.publish(temporaryURL: foreign, sourceURL: source, cropped: false,
+                                                        trimmed: true, directory: directory, extension: "mp4"))
+    }
+}

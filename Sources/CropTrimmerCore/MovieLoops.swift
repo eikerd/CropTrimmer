@@ -170,18 +170,19 @@ public struct MovieLoops: Equatable, Sendable {
         return (start + best.shift, end + best.shift, best.guide)
     }
 
-    /// `move` with snapping. Returns the time a guide should be drawn at, or nil when nothing was
-    /// close enough. Snapping happens before the end-of-movie clamp, so a loop pushed against the
-    /// end still shortens rather than sticking.
-    @discardableResult public mutating func move(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double, snappingTo targets: [Double], tolerance: Double) -> Double? {
-        guard delta.isFinite, originalStart.isFinite, originalEnd.isFinite else { return nil }
+    /// `move` with snapping. `moved` says whether the loop actually moved — a rejected move and a
+    /// move that simply found nothing to stick to are different answers, and only the first should
+    /// stop a caller. `guide` is the time to draw a snap guide at. Snapping happens before the
+    /// end-of-movie clamp, so a loop pushed against the end still shortens rather than sticking.
+    @discardableResult public mutating func move(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double, snappingTo targets: [Double], tolerance: Double) -> (moved: Bool, guide: Double?) {
+        guard delta.isFinite, originalStart.isFinite, originalEnd.isFinite else { return (false, nil) }
         let snapped = Self.snap(start: originalStart + delta, end: originalEnd + delta, targets: targets, tolerance: tolerance)
         let effectiveDelta = snapped.map { $0.start - originalStart } ?? delta
-        guard move(id, originalStart: originalStart, originalEnd: originalEnd, by: effectiveDelta) else { return nil }
+        guard move(id, originalStart: originalStart, originalEnd: originalEnd, by: effectiveDelta) else { return (false, nil) }
         // A snap the clamp then overrode is not a snap; only report a guide the loop actually reached.
         guard let guide = snapped?.guide, let moved = ranges.first(where: { $0.id == id }),
-              min(abs(moved.start - guide), abs(moved.end - guide)) < 0.000001 else { return nil }
-        return guide
+              min(abs(moved.start - guide), abs(moved.end - guide)) < 0.000001 else { return (true, nil) }
+        return (true, guide)
     }
 
     @discardableResult public mutating func resizeSelected(to requestedLength: Double) -> Bool {

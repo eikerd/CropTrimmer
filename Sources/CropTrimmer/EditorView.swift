@@ -595,7 +595,7 @@ private struct LoopHeader: View {
             .gesture(moveGesture)
             .focusable().focused($focused)
             .onChange(of: model.loops.selectedID) { _, id in focused = id == loop.id }
-            .onAppear { focused = selected }
+            .onAppear { focused = model.loops.selectedID == loop.id }
             .onChange(of: focused) { _, isFocused in model.setLoopHeaderFocused(loop.id, focused: isFocused) }
             .onDisappear { model.setLoopHeaderFocused(loop.id, focused: false) }
     }

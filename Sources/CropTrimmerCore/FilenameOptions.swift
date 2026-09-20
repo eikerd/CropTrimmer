@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Which operations get to show up in an exported file's name. The owner's preference, so the
 /// name can be kept short ("Clip - loop 01") or made to describe what was done to it
@@ -21,14 +22,26 @@ public struct FilenameOptions: Codable, Equatable, Sendable {
 
     private static let key = "CropTrimmer.filenameOptions"
 
+    private static let log = Logger(subsystem: "com.croptrimmer.mac", category: "preferences")
+
+    /// Falls back to the standard names when nothing is stored, and says so in the log when
+    /// something *was* stored but could not be read — otherwise a silent reset of the owner's
+    /// preferences looks exactly like never having set them.
     public static func load(from defaults: UserDefaults = .standard) -> FilenameOptions {
-        guard let data = defaults.data(forKey: key),
-              let decoded = try? JSONDecoder().decode(FilenameOptions.self, from: data) else { return .standard }
-        return decoded
+        guard let data = defaults.data(forKey: key) else { return .standard }
+        do {
+            return try JSONDecoder().decode(FilenameOptions.self, from: data)
+        } catch {
+            log.error("Stored file-name options could not be read (\(error.localizedDescription, privacy: .public)); using the standard names.")
+            return .standard
+        }
     }
 
     public func save(to defaults: UserDefaults = .standard) {
-        guard let data = try? JSONEncoder().encode(self) else { return }
-        defaults.set(data, forKey: Self.key)
+        do {
+            defaults.set(try JSONEncoder().encode(self), forKey: Self.key)
+        } catch {
+            Self.log.error("File-name options could not be saved (\(error.localizedDescription, privacy: .public)); this session keeps them, the next one will not.")
+        }
     }
 }

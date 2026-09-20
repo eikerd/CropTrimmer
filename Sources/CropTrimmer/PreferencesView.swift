@@ -20,6 +20,8 @@ struct PreferencesView: View {
         }
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+        .onAppear { model.preferencesIsOpen = true }
+        .onDisappear { model.preferencesIsOpen = false }
     }
 }
 
