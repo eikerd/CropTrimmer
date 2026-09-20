@@ -40,7 +40,7 @@ struct CropTrimmerApp: App {
                 Button("Add Loop", action: model.addLoop).disabled(model.source == nil || model.isBusy || model.showReview)
                 Button("Remove Selected Loop", action: model.removeLoop).disabled(model.isBusy || model.showReview || model.loops.ranges.isEmpty)
                 Divider()
-                Button("Adjust Crop", action: model.beginCrop).disabled(model.source == nil || model.isBusy || model.showReview)
+                Button("Adjust Crop", action: model.beginCrop).disabled(model.source == nil || model.isBusy || model.showReview || model.loops.ranges.isEmpty)
                 Button("Export Selected Loop", action: model.export).keyboardShortcut("e", modifiers: .command).disabled(model.plan == nil || model.isBusy || model.showReview || model.cropAdjusting || model.loops.selectedID.map(model.hasErrors(for:)) ?? true)
                 Button("Export Queue", action: model.exportQueue).disabled(model.source == nil || model.isBusy || model.showReview || model.cropAdjusting || model.hasInputErrors)
                 Button("Show Exports") { model.showReview = true }.disabled(model.results.isEmpty || model.isBusy)

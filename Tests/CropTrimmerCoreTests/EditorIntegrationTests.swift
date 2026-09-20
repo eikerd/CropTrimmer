@@ -84,6 +84,9 @@ final class EditorIntegrationTests: XCTestCase {
         try await waitUntil { model.player.currentItem?.status == .readyToPlay }
         // A movie opens bare: no default loop, the whole timeline in play.
         XCTAssertTrue(model.loops.ranges.isEmpty)
+        // Nothing to plan with no loops, so the status must not stall mid-sentence.
+        try await waitUntil { !model.status.contains("Checking export methods") }
+        XCTAssertTrue(model.status.hasPrefix("Ready"), model.status)
         XCTAssertEqual(model.settings.start, 0); XCTAssertEqual(model.settings.end, model.source?.duration)
         // + puts the first loop's A at the playhead.
         model.seek(2); model.addLoop()

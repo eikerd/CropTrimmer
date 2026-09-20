@@ -449,6 +449,12 @@ final class EditorModel: ObservableObject {
         }
         queuePlanErrors = [:]
         plan = loops.selectedID.flatMap { queuePlans[$0] }
+        // A bare movie has nothing to plan, and the planning loop below would never revisit the
+        // status, leaving it reading "Checking export methods…" for good.
+        guard !snapshot.isEmpty else {
+            if !preserveStatus { status = "Ready · add a loop with + to export part of this movie" }
+            return
+        }
         if !preserveStatus { status = plan?.explanation ?? "Checking export methods…" }
         planningTask = Task {
             do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
@@ -522,6 +528,8 @@ final class EditorModel: ObservableObject {
         settings.start = position
     }
     func setEnd() {
+        // Unlike I, O cannot open a loop on its own: B alone says where a range ends, not where
+        // it starts, so there is nothing sensible to create from a single press.
         guard !loops.ranges.isEmpty else { status = "Add a loop with + first."; return }
         guard !isBusy, position > settings.start, let source else { status = "End must be after the start."; return }
         settings.end = min(position, source.duration)

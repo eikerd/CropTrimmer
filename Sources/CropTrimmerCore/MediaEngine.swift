@@ -107,7 +107,7 @@ public actor MediaEngine {
             let sample = try encodedPlan(plan.source, settings, reason: "Estimate sample")
             let lutFile = try writeLUTIfNeeded(for: sample, output: output)
             defer { if let lutFile { try? FileManager.default.removeItem(at: lutFile) } }
-            _ = try await run("ffmpeg", arguments: encodeArguments(sample, output: output, lutFile: lutFile), duration: length) { fraction, _ in
+            _ = try await run("ffmpeg", arguments: encodeArguments(sample, output: output, lutFile: lutFile), duration: sample.outputDuration) { fraction, _ in
                 progress((Double(index) + fraction) / 3, "Estimating " + quality.rawValue.lowercased())
             }
             let bytes = try SourceIdentity(url: output).size
@@ -153,7 +153,7 @@ public actor MediaEngine {
         }
         let lutFile = try writeLUTIfNeeded(for: active, output: temporaryURL)
         defer { if let lutFile { try? FileManager.default.removeItem(at: lutFile) } }
-        _ = try await run("ffmpeg", arguments: encodeArguments(active, output: temporaryURL, lutFile: lutFile), duration: active.duration, progress: progress)
+        _ = try await run("ffmpeg", arguments: encodeArguments(active, output: temporaryURL, lutFile: lutFile), duration: active.outputDuration, progress: progress)
         progress(0.94, "Validating encoded movie")
         let output = try await inspect(temporaryURL)
         try await validateOutput(active, output: output)
@@ -334,8 +334,9 @@ public actor MediaEngine {
               plan.method == .copy || output.rotation == 0 else {
             throw MediaError.failed("The output streams or dimensions do not match the export plan.")
         }
-        // A sped-up output is measured against its own length, and a slow one gets the same
-        // two-frame allowance stretched the same way, so the check stays exactly as strict.
+        // Both are measured against the output's own length. Slow motion stretches the two-frame
+        // allowance by the same factor; above 1x the base allowance is kept rather than tightened,
+        // which is looser than strictly necessary and never turns a good export into a failure.
         let allowance = max(0.1, plan.source.fps > 0 ? 2 / plan.source.fps : 0.1) / min(1, plan.settings.speed)
         guard abs(output.duration - plan.outputDuration) <= allowance else {
             throw MediaError.failed("The exported duration differs unexpectedly from the selected range.")
