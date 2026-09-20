@@ -222,7 +222,8 @@ struct QueueLoopCard: View {
     private var exportHelp: String {
         guard let source = model.source else { return "" }
         let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
-            trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number)
+            trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number,
+            speed: edit.speed, options: model.filenameOptions)
             + "." + (model.queuePlans[loop.id]?.fileExtension ?? "mp4")
         return "Saves \(filename) beside the original. An extra number is added if that name exists."
     }

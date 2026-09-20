@@ -56,3 +56,42 @@ final class StorageTests: XCTestCase {
         XCTAssertThrowsError(try OutputPublisher.publish(temporaryURL: directory.appendingPathComponent("unowned.mp4"), sourceURL: directory.appendingPathComponent("source.mov"), cropped: true, directory: directory, extension: "mp4"))
     }
 }
+
+final class FilenameOptionsTests: XCTestCase {
+    private let source = URL(fileURLWithPath: "/tmp/Clip.mp4")
+
+    func testStandardOptionsKeepTheNamesTheAppAlwaysProduced() {
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: true, trimmed: true, loopNumber: 1), "Clip - loop 01 - trim crop")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 12), "Clip - loop 12 - trim")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: true, trimmed: false), "Clip - crop")
+    }
+
+    func testEachOperationCanBeLeftOutOfTheName() {
+        var options = FilenameOptions(includeLoopNumber: false, includeCrop: true, includeTrim: true)
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: true, trimmed: true, loopNumber: 3, options: options), "Clip - trim crop")
+        options = FilenameOptions(includeLoopNumber: true, includeCrop: false, includeTrim: true)
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: true, trimmed: true, loopNumber: 3, options: options), "Clip - loop 03 - trim")
+        options = FilenameOptions(includeLoopNumber: true, includeCrop: true, includeTrim: false)
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: true, trimmed: true, loopNumber: 3, options: options), "Clip - loop 03 - crop")
+        options = FilenameOptions(includeLoopNumber: false, includeCrop: false, includeTrim: false)
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: true, trimmed: true, loopNumber: 3, options: options), "Clip",
+                       "With every part switched off the export takes the source's own name; uniquing keeps it from replacing it")
+    }
+
+    func testSpeedJoinsTheNameOnlyWhenAskedForAndOnlyWhenItIsNotNormal() {
+        let options = FilenameOptions(includeSpeed: true)
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 1, speed: 0.5, options: options), "Clip - loop 01 - trim - 0.5x")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 1, speed: 8, options: options), "Clip - loop 01 - trim - 8x")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 1, speed: 1, options: options), "Clip - loop 01 - trim")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 1, speed: 0.5), "Clip - loop 01 - trim",
+                       "Speed stays out of the name unless the preference asks for it")
+    }
+
+    func testOptionsSurviveAStoreAndReload() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "CropTrimmer.filename.\(UUID().uuidString)"))
+        XCTAssertEqual(FilenameOptions.load(from: defaults), .standard)
+        FilenameOptions(includeLoopNumber: false, includeCrop: true, includeTrim: false, includeSpeed: true).save(to: defaults)
+        let restored = FilenameOptions.load(from: defaults)
+        XCTAssertFalse(restored.includeLoopNumber); XCTAssertTrue(restored.includeSpeed); XCTAssertFalse(restored.includeTrim)
+    }
+}

@@ -11,7 +11,7 @@ public enum OutputPublisher {
         lock.lock(); owned.insert(url.path); lock.unlock()
         return url
     }
-    public static func publish(temporaryURL: URL, sourceURL: URL, cropped: Bool, trimmed: Bool = true, directory: URL, extension fileExtension: String, loopNumber: Int? = nil) throws -> URL {
+    public static func publish(temporaryURL: URL, sourceURL: URL, cropped: Bool, trimmed: Bool = true, directory: URL, extension fileExtension: String, loopNumber: Int? = nil, speed: Double = 1, options: FilenameOptions = .standard) throws -> URL {
         let temporary = temporaryURL.standardizedFileURL
         lock.lock(); let isOwned = owned.contains(temporary.path); lock.unlock()
         guard isOwned, temporary.deletingLastPathComponent().resolvingSymlinksInPath() == directory.standardizedFileURL.resolvingSymlinksInPath(), temporary != sourceURL.standardizedFileURL else {
@@ -19,7 +19,7 @@ public enum OutputPublisher {
         }
         let values = try temporary.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) > 0 else { throw MediaError.failed("Export produced no regular movie file.") }
-        let base = baseName(sourceURL: sourceURL, cropped: cropped, trimmed: trimmed, loopNumber: loopNumber)
+        let base = baseName(sourceURL: sourceURL, cropped: cropped, trimmed: trimmed, loopNumber: loopNumber, speed: speed, options: options)
         for index in 1...10000 {
             let destination = directory.appendingPathComponent(base + (index == 1 ? "" : " \(index)")).appendingPathExtension(safeExtension(fileExtension))
             let result = temporary.path.withCString { src in destination.path.withCString { dst in renamex_np(src, dst, UInt32(RENAME_EXCL)) } }
@@ -33,9 +33,26 @@ public enum OutputPublisher {
         }
         throw MediaError.failed("Too many files share this export name. Choose another destination.")
     }
-    public static func baseName(sourceURL: URL, cropped: Bool, trimmed: Bool, loopNumber: Int? = nil) -> String {
-        let loopSuffix = loopNumber.map { " - loop \(String(format: "%02d", max(1, $0)))" } ?? ""
-        return sourceURL.deletingPathExtension().lastPathComponent + loopSuffix + (cropped ? (trimmed ? " - trim crop" : " - crop") : " - trim")
+    /// The name an export takes, before the uniquing suffix. Each operation contributes its own
+    /// part only if the owner asked for it; with everything switched off the name is the source's,
+    /// and uniquing keeps it from ever replacing the original.
+    public static func baseName(sourceURL: URL, cropped: Bool, trimmed: Bool, loopNumber: Int? = nil, speed: Double = 1, options: FilenameOptions = .standard) -> String {
+        var name = sourceURL.deletingPathExtension().lastPathComponent
+        if options.includeLoopNumber, let loopNumber {
+            name += " - loop \(String(format: "%02d", max(1, loopNumber)))"
+        }
+        let showsTrim = options.includeTrim && trimmed
+        let showsCrop = options.includeCrop && cropped
+        switch (showsTrim, showsCrop) {
+        case (true, true): name += " - trim crop"
+        case (true, false): name += " - trim"
+        case (false, true): name += " - crop"
+        case (false, false): break
+        }
+        if options.includeSpeed, abs(speed - 1) > 0.000001 {
+            name += " - " + speed.formatted(.number.precision(.fractionLength(0...3))) + "x"
+        }
+        return name
     }
     public static func discard(temporaryURL: URL) {
         let path = temporaryURL.standardizedFileURL.path

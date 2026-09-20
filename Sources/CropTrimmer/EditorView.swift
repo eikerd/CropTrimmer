@@ -589,12 +589,19 @@ private struct LoopHeader: View {
         .contentShape(Rectangle())
     }
 
-    private var interactiveHeader: some View {
+    /// Split from `interactiveHeader` so the type checker does not choke on one long chain.
+    private var headerWithGesturesAndFocus: some View {
         headerLabel
             .gesture(moveGesture)
             .focusable().focused($focused)
             .onChange(of: model.loops.selectedID) { _, id in focused = id == loop.id }
             .onAppear { focused = selected }
+            .onChange(of: focused) { _, isFocused in model.setLoopHeaderFocused(loop.id, focused: isFocused) }
+            .onDisappear { model.setLoopHeaderFocused(loop.id, focused: false) }
+    }
+
+    private var interactiveHeader: some View {
+        headerWithGesturesAndFocus
             .onKeyPress(.leftArrow, phases: .down) { press in moveByKeyboard(press.modifiers.contains(.shift) ? -1 : -0.1); return .handled }
             .onKeyPress(.rightArrow, phases: .down) { press in moveByKeyboard(press.modifiers.contains(.shift) ? 1 : 0.1); return .handled }
             .onKeyPress(keys: [.delete, .deleteForward], phases: .down) { _ in model.removeLoop(loop.id); return .handled }
@@ -604,7 +611,7 @@ private struct LoopHeader: View {
             .accessibilityLabel("Move Loop \(number)")
             .accessibilityValue("\(timeLabel(loop.start)) to \(timeLabel(loop.end)), \(timeLabel(loop.duration)) long" + (selected ? ", selected" : ""))
             .accessibilityAdjustableAction { direction in moveByKeyboard(direction == .increment ? 0.1 : -0.1) }
-            .help("Drag this header to move the whole loop; it snaps to the other loops' edges, the playhead and the movie's ends, marked by a dashed guide. Arrow keys move 0.1s; Shift-arrow moves 1s. Delete removes it. Drag the filmstrip below to scrub.")
+            .help("Drag this header to move the whole loop; it snaps to the other loops' edges, the playhead and the movie's ends, marked by a dashed guide. With this header focused: arrow keys move it 0.1s, Shift-arrow 1s, Delete removes it. Click elsewhere first and the arrow keys move the playhead instead. Drag the filmstrip below to scrub.")
     }
 
     private var moveGesture: some Gesture {

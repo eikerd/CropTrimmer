@@ -9,7 +9,29 @@ final class EditorModel: ObservableObject {
     @Published var source: MediaSource?
     @Published var settings = EditSettings() { didSet { settingsChanged(from: oldValue) } }
     @Published private(set) var loops = MovieLoops()
-    @Published private(set) var defaultLoopLength: Double = 5
+    /// The length new loops get; also a persisted preference, so it is remembered across launches.
+    /// The transport's 5s/10s buttons still change it live, exactly as before.
+    @Published var defaultLoopLength: Double = {
+        let stored = UserDefaults.standard.double(forKey: EditorModel.defaultLoopLengthKey)
+        return stored == 5 || stored == 10 ? stored : 5
+    }() { didSet { UserDefaults.standard.set(defaultLoopLength, forKey: EditorModel.defaultLoopLengthKey) } }
+    private static let defaultLoopLengthKey = "CropTrimmer.defaultLoopLength"
+    /// The loop headers currently holding keyboard focus (normally at most one). A set, not a bool
+    /// set directly by each header, so moving focus from one header straight to another can never
+    /// race: each header only ever inserts/removes its own id, in either order, to the same result.
+    @Published private var focusedLoopHeaderIDs: Set<UUID> = []
+    /// True while a loop header on the timeline owns keyboard focus, so the global arrow-key
+    /// playhead nudges yield to the header's own 0.1s/1s nudge.
+    var loopHeaderHasKeyboardFocus: Bool { !focusedLoopHeaderIDs.isEmpty }
+    func setLoopHeaderFocused(_ id: UUID, focused: Bool) {
+        if focused { focusedLoopHeaderIDs.insert(id) } else { focusedLoopHeaderIDs.remove(id) }
+    }
+    /// Which operations show up in an exported file's name. Persisted, so it survives a launch.
+    @Published var filenameOptions = FilenameOptions.load() { didSet { filenameOptions.save() } }
+    enum PreferencesTab: Hashable { case general, filenames, shortcuts }
+    @Published var preferencesTab: PreferencesTab = .general
+    /// Set by the view that hosts the Settings scene, so the model can open it (e.g. for `?`).
+    var openPreferences: (() -> Void)?
     var selectedLoopNumber: Int { (loops.ranges.firstIndex { $0.id == loops.selectedID } ?? 0) + 1 }
     @Published var position: Double = 0
     @Published var isPlaying = false
@@ -114,11 +136,22 @@ final class EditorModel: ObservableObject {
                 guard let self, self.source != nil, !self.showReview, !self.isBusy,
                       NSApp.keyWindow?.attachedSheet == nil,
                       !(NSApp.keyWindow is NSPanel),
-                      !(NSApp.keyWindow?.firstResponder is NSTextView),
-                      event.modifierFlags.isDisjoint(with: [.command, .control, .option]) else { return false }
+                      !(NSApp.keyWindow?.firstResponder is NSTextView) else { return false }
+                let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                // Arrow-key playhead nudges: 1s bare, 5s with Shift, 0.2s with Option. A focused
+                // loop header's own onKeyPress (0.1s/1s) takes priority over these.
+                if let arrow = event.specialKey, arrow == .leftArrow || arrow == .rightArrow {
+                    guard !self.loopHeaderHasKeyboardFocus, mods.isSubset(of: [.shift, .option]) else { return false }
+                    let sign: Double = arrow == .leftArrow ? -1 : 1
+                    let seconds = mods.contains(.shift) ? 5.0 : (mods.contains(.option) ? 0.2 : 1.0)
+                    self.jump(sign * seconds); return true
+                }
+                guard mods.isDisjoint(with: [.command, .control, .option]) else { return false }
                 switch event.charactersIgnoringModifiers?.lowercased() {
                 case "i": self.setStart(); return true
                 case "o": self.setEnd(); return true
+                case "?":
+                    self.preferencesTab = .shortcuts; self.openPreferences?(); return true
                 case " ":
                     // A focused AppKit control (button, popup, slider, field) owns Space for activation.
                     guard !(NSApp.keyWindow?.firstResponder is NSControl) else { return false }
@@ -888,7 +921,7 @@ final class EditorModel: ObservableObject {
                     try Task.checkCancellation()
                     guard try SourceIdentity(url: source.url) == source.identity else { throw MediaError.sourceChanged }
                     let trimmed = plan.settings.start > 0.001 || plan.settings.end < source.duration - 0.001
-                    let published = try OutputPublisher.publish(temporaryURL: temp, sourceURL: source.url, cropped: plan.settings.cropEnabled, trimmed: trimmed, directory: directory, extension: plan.fileExtension, loopNumber: number)
+                    let published = try OutputPublisher.publish(temporaryURL: temp, sourceURL: source.url, cropped: plan.settings.cropEnabled, trimmed: trimmed, directory: directory, extension: plan.fileExtension, loopNumber: number, speed: plan.settings.speed, options: filenameOptions)
                     result.url = published; results.append(result); completed += 1
                 }
                 progress = 1; status = "Saved \(completed) loop\(completed == 1 ? "" : "s") to \(directory.lastPathComponent)"
