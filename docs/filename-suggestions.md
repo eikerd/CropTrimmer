@@ -19,8 +19,8 @@ default is `google/gemini-2.5-flash-lite`; it is independent of the color model.
 The dropdown also offers OpenAI GPT-4.1 Mini and Anthropic Claude Haiku 4.5.
 These are catalog choices, not a guarantee of access for a particular key.
 Select another model after a model error; HTTP 401 requires replacing the key.
-Naming uses the OpenRouter key saved in Keychain, with the existing environment
-fallback. Requests always target OpenRouter over HTTPS and refuse redirects.
+Naming uses the OpenRouter key saved in app preferences, with the existing
+environment fallback. Requests always target OpenRouter over HTTPS and refuse redirects.
 API usage may incur charges. A live check using a synthetic color-bar frame
 reached OpenRouter but returned HTTP 401 (key rejected). Successful live naming
 remains unverified pending a valid key; no private movie was uploaded or renamed.

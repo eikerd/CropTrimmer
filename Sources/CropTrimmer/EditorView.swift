@@ -7,6 +7,7 @@ struct EditorView: View {
     @ObservedObject var model: EditorModel
     @State private var editingFilename = false
     @State private var filenameDraft = ""
+    @State private var filenamePlayground = ""
     @State private var filenameTask: Task<Void, Never>?
     @State private var filenameRequestID: UUID?
     @State private var colorTool: ColorTool = .auto
@@ -49,6 +50,7 @@ struct EditorView: View {
                 .help(model.source.map { "Double-click to rename · " + $0.url.path } ?? "Open a movie to begin")
                 .onTapGesture(count: 2, perform: beginFilenameEdit) }
             ToolbarItem { Button { model.showReview = true } label: { Label("Exports (\(model.results.count))", systemImage: "square.stack") }.disabled(model.results.isEmpty) }
+            ToolbarItem { Button { openSettings() } label: { Label("Settings", systemImage: "gearshape") }.help("Settings (⌘,)") }
         }
         .sheet(isPresented: $model.showReview) { ReviewView(model: model) }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -200,20 +202,38 @@ struct EditorView: View {
                             Text("." + source.url.pathExtension).foregroundStyle(.secondary)
                         }
                     }
-                    Text("Renames the original file in its current folder.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Menu("Suggest name") {
-                            Button("Random name") {
-                                filenameTask?.cancel(); filenameRequestID = nil
-                                filenameDraft = FilenameSuggestion.random()
+                    Text(filenamePlayground.isEmpty ? " " : filenamePlayground)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .accessibilityLabel(filenamePlayground.isEmpty ? "No sample name yet" : "Sample name: \(filenamePlayground)")
+                    HStack(spacing: 8) {
+                        Button(action: suggestFilename) { Image(systemName: "sparkles") }
+                            .accessibilityLabel("Suggest a name with AI")
+                            .help("Describe the frame with AI")
+                            .disabled(filenameRequestID != nil)
+                        Picker("Model", selection: $model.filenameModel) {
+                            ForEach(VisionModel.all, id: \.id) { option in
+                                Text(option.name).tag(option.id)
                             }
-                            Button("Describe frame with AI", action: suggestFilename)
                         }
+                        .labelsHidden().pickerStyle(.menu).frame(width: 150)
                         .disabled(filenameRequestID != nil)
+                        Button {
+                            filenameTask?.cancel(); filenameRequestID = nil
+                            filenamePlayground = FilenameSuggestion.random()
+                        } label: { Image(systemName: "die.face.5") }
+                            .accessibilityLabel("Suggest a random name")
+                            .help("Random name")
+                        Spacer()
                         if filenameRequestID != nil {
                             ProgressView().controlSize(.small).accessibilityLabel("Suggesting filename")
                         }
+                        Button { filenameDraft = filenamePlayground } label: {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                        .accessibilityLabel("Use the sample name")
+                        .help("Put the sample name in the field above")
+                        .disabled(filenamePlayground.isEmpty)
                     }
                     HStack {
                         Button("Cancel", action: cancelFilenameEdit)
@@ -242,6 +262,7 @@ struct EditorView: View {
         guard let source = model.source, !model.isBusy, !model.showReview else { return }
         model.pause()
         filenameDraft = source.url.deletingPathExtension().lastPathComponent
+        filenamePlayground = ""
         editingFilename = true; filenameFocused = true
     }
 
@@ -251,11 +272,12 @@ struct EditorView: View {
 
     private func cancelFilenameEdit() {
         filenameTask?.cancel(); filenameTask = nil; filenameRequestID = nil
+        filenamePlayground = ""
         editingFilename = false
     }
 
     private func suggestFilename() {
-        let requestID = UUID(), originalDraft = filenameDraft
+        let requestID = UUID()
         filenameRequestID = requestID
         filenameTask = Task { @MainActor in
             defer {
@@ -263,9 +285,8 @@ struct EditorView: View {
             }
             do {
                 let name = try await model.suggestFilename()
-                guard !Task.isCancelled, filenameRequestID == requestID, editingFilename,
-                      filenameDraft == originalDraft else { return }
-                filenameDraft = name
+                guard !Task.isCancelled, filenameRequestID == requestID, editingFilename else { return }
+                filenamePlayground = name
             } catch {
                 guard !Task.isCancelled, filenameRequestID == requestID, editingFilename else { return }
                 model.errorMessage = error.localizedDescription

@@ -10,10 +10,8 @@ struct ColorControlsView: View {
     private var edit: EditSettings { model.loops.ranges.first { $0.id == loopID }?.settings ?? EditSettings() }
 
     var body: some View {
-        DisclosureGroup("Color correction", isExpanded: $expanded) {
+        DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 5) {
-                Toggle("Enable", isOn: binding(\.enabled)).toggleStyle(.checkbox)
-                    .accessibilityLabel("Loop \(number) enable color correction")
                 colorSlider("Black point", key: \.blackPoint, range: 0...max(0, min(0.95, Double(edit.color.whitePoint) - 1.0 / 255.0)))
                 colorSlider("White point", key: \.whitePoint, range: min(1, max(0.05, Double(edit.color.blackPoint) + 1.0 / 255.0))...1)
                 colorSlider("Gamma", key: \.gamma, range: 0.25...4)
@@ -24,8 +22,16 @@ struct ColorControlsView: View {
                         .accessibilityLabel("Reset Loop \(number) color correction")
                 }
             }.padding(.top, 4)
+        } label: {
+            HStack(spacing: 8) {
+                Text("Color correction")
+                Spacer(minLength: 8)
+                Toggle("Enable", isOn: binding(\.enabled)).toggleStyle(.checkbox)
+                    .accessibilityLabel("Loop \(number) enable color correction")
+            }
+            .padding(.leading, 6)
         }
-        .font(.system(size: 10))
+        .font(.system(size: 12))
         .onAppear { expanded = edit.color.enabled && !edit.color.isIdentity }
     }
 

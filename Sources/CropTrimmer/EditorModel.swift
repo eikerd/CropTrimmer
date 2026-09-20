@@ -32,6 +32,13 @@ final class EditorModel: ObservableObject {
     @Published var colorProviderEndpoint = UserDefaults.standard.string(forKey: "CropTrimmer.colorProviderEndpoint") ?? "" {
         didSet { UserDefaults.standard.set(colorProviderEndpoint, forKey: "CropTrimmer.colorProviderEndpoint") }
     }
+    /// Size a fresh crop starts at, centred in the picture. Clamped to the source.
+    @Published var defaultCropWidth = UserDefaults.standard.object(forKey: "CropTrimmer.defaultCropWidth") as? Int ?? 320 {
+        didSet { UserDefaults.standard.set(defaultCropWidth, forKey: "CropTrimmer.defaultCropWidth") }
+    }
+    @Published var defaultCropHeight = UserDefaults.standard.object(forKey: "CropTrimmer.defaultCropHeight") as? Int ?? 240 {
+        didSet { UserDefaults.standard.set(defaultCropHeight, forKey: "CropTrimmer.defaultCropHeight") }
+    }
     @Published var colorProviderModel = UserDefaults.standard.string(forKey: "CropTrimmer.colorProviderModel") ?? "" {
         didSet { UserDefaults.standard.set(colorProviderModel, forKey: "CropTrimmer.colorProviderModel") }
     }
@@ -337,7 +344,9 @@ final class EditorModel: ObservableObject {
         let key = try OpenRouterKeyStore.read()
             ?? Self.colorProviderAPIKey(environment: ProcessInfo.processInfo.environment, isOpenRouter: true)
         guard let key else { throw MediaError.invalid("Add your OpenRouter API key in Settings.") }
-        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time, maximumSide: 512)
+        // The crop tool picks what the model looks at; no crop means the whole frame.
+        let crop = settings.cropEnabled ? settings.crop : nil
+        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time, maximumSide: 512, crop: crop)
         try Task.checkCancellation()
         guard self.source?.id == sourceID else { throw CancellationError() }
         let name = try await FilenameVisionProvider().suggest(framePNG: frame, model: namingModel, apiKey: key)

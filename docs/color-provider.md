@@ -27,9 +27,13 @@ the custom LUT-service protocol; a nonblank name selects the OpenAI-compatible
 adapter. Auto correction and saved looks have their own tabs.
 
 Open **Crop Trimmer → Settings…** (Command-comma) and paste the OpenRouter key
-into the masked field, then click **Save key**. It is saved in the local macOS
-Keychain, never in preferences. Paste a replacement and save again to rotate it.
-Blank input cannot overwrite a saved key. Saving a key fills the OpenRouter
+into the masked field, then click **Save key**. It is stored as a plain app
+preference in `~/Library/Preferences/com.croptrimmer.mac.plist`, so anything
+running as you can read it — treat the key as rotatable, not secret. The
+Keychain was dropped deliberately: the app is signed ad-hoc, so its identity
+changes on every build and macOS re-prompted for the login password each
+session. Settings reopens with the saved key in the field; paste a replacement
+and save again to rotate it. Blank input cannot overwrite a saved key. Saving a key fills the OpenRouter
 endpoint when no endpoint has been configured; choose a vision model too.
 The dropdown offers Gemini 2.5 Flash Lite, GPT-4.1 Mini, and Claude Haiku 4.5.
 Custom provider endpoints remain available in the disclosure below the picker.

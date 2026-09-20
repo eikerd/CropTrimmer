@@ -31,13 +31,15 @@ enum AutomaticColorSuggestion {
     /// Encodes the upright representative frame for a reference-conditioned
     /// provider. The image is transient request data and is never added to the
     /// media library.
-    static func framePNGData(url: URL, time: Double, maximumSide: CGFloat? = nil) async throws -> Data {
+    static func framePNGData(url: URL, time: Double, maximumSide: CGFloat? = nil, crop: PixelRect? = nil) async throws -> Data {
         guard url.isFileURL, time.isFinite, time >= 0 else {
             throw MediaError.invalid("Choose a valid movie frame for color correction.")
         }
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
-        if let maximumSide {
+        // A crop is expressed in source pixels, so the frame has to arrive at full
+        // size; the downscale to maximumSide happens after cropping instead.
+        if let maximumSide, crop == nil {
             guard maximumSide.isFinite, maximumSide > 0, maximumSide <= 4096 else {
                 throw MediaError.invalid("Choose a valid frame size.")
             }
@@ -46,7 +48,8 @@ enum AutomaticColorSuggestion {
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
-        let frame = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 60_000)).image
+        let fullFrame = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 60_000)).image
+        let frame = try crop.map { try cropped(fullFrame, to: $0, maximumSide: maximumSide) } ?? fullFrame
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
             throw MediaError.failed("The representative frame could not be encoded.")
@@ -56,6 +59,32 @@ enum AutomaticColorSuggestion {
         let result = Data(data)
         guard result.count <= 16 * 1024 * 1024 else { throw MediaError.failed("The representative frame is too large for a color provider request.") }
         return result
+    }
+
+    /// Crops to a region in source pixels, then downscales so the long side is at
+    /// most `maximumSide`. Cropping first keeps the requested region's detail.
+    private static func cropped(_ image: CGImage, to crop: PixelRect, maximumSide: CGFloat?) throws -> CGImage {
+        let region = crop.constrained(toWidth: image.width, height: image.height, even: false)
+        let rect = CGRect(x: region.x, y: region.y, width: region.width, height: region.height)
+        guard let cut = image.cropping(to: rect) else {
+            throw MediaError.failed("The crop region could not be read from this frame.")
+        }
+        guard let maximumSide, maximumSide > 0,
+              CGFloat(max(cut.width, cut.height)) > maximumSide else { return cut }
+        let scale = maximumSide / CGFloat(max(cut.width, cut.height))
+        let width = max(1, Int((CGFloat(cut.width) * scale).rounded()))
+        let height = max(1, Int((CGFloat(cut.height) * scale).rounded()))
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            throw MediaError.failed("The crop region could not be resized.")
+        }
+        context.interpolationQuality = .high
+        context.draw(cut, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let scaled = context.makeImage() else {
+            throw MediaError.failed("The crop region could not be resized.")
+        }
+        return scaled
     }
 
     static func suggest(url: URL, time: Double, referenceURL: URL, sampleSide: Int = 32) async throws -> Result {
