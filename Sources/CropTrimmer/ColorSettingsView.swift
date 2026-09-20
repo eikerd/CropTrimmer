@@ -39,7 +39,7 @@ struct ColorSettingsView: View {
                 }
             }
             Section {
-                Text("The key is kept in the Keychain, never in a file or this repository. Leave the custom endpoint empty to use OpenRouter.")
+                Text("The key is saved as an app preference, not in the Keychain, so anything running as you can read it — treat it as rotatable rather than secret. The Keychain was dropped deliberately: this app is signed ad-hoc, so macOS re-prompted for the login password every session. Leave the custom endpoint empty to use OpenRouter.")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
         }

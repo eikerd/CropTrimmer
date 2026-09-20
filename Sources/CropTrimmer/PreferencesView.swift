@@ -87,11 +87,8 @@ private struct FilenameSettingsView: View {
                 Toggle("Trim", isOn: $model.filenameOptions.includeTrim)
                 Toggle("Crop", isOn: $model.filenameOptions.includeCrop)
                 Toggle("Speed", isOn: $model.filenameOptions.includeSpeed)
-                Picker("Naming model", selection: $model.filenameModel) {
-                    ForEach(VisionModel.all, id: \.id) { option in
-                        Text(option.name).tag(option.id)
-                    }
-                }.help("The OpenRouter model that describes a frame when you ask for a suggested name.")
+                VisionModelPicker(title: "Naming model", selection: $model.filenameModel)
+                    .help("The OpenRouter model that describes a frame when you ask for a suggested name.")
             } header: {
                 Text("Name exports after")
             } footer: {

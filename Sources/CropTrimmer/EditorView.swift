@@ -261,12 +261,8 @@ struct EditorView: View {
                             .accessibilityLabel("Suggest a name with AI")
                             .help("Describe the frame with AI")
                             .disabled(filenameRequestID != nil)
-                        Picker("Model", selection: $model.filenameModel) {
-                            ForEach(VisionModel.all, id: \.id) { option in
-                                Text(option.name).tag(option.id)
-                            }
-                        }
-                        .labelsHidden().pickerStyle(.menu).frame(width: 150)
+                        VisionModelPicker(title: "Model", selection: $model.filenameModel)
+                            .labelsHidden().frame(width: 150)
                         .disabled(filenameRequestID != nil)
                         Button {
                             filenameTask?.cancel(); filenameRequestID = nil
