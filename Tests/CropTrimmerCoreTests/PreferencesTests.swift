@@ -48,4 +48,27 @@ final class PreferencesTests: XCTestCase {
         XCTAssertTrue(opened)
         XCTAssertEqual(model.preferencesTab, .shortcuts)
     }
+
+    /// A model id is persisted forever and the list has already grown from three entries to six.
+    /// A stored id that is no longer in the list must still be selectable and visible, or the
+    /// setting silently shows nothing while the app keeps using it.
+    @MainActor
+    func testAStoredModelIdThatLeftTheListIsStillShown() {
+        XCTAssertFalse(VisionModel.all.contains { $0.id == "retired/model-v0" })
+        let picker = VisionModelPicker(title: "Naming model", selection: .constant("retired/model-v0"))
+        XCTAssertEqual(picker.selection, "retired/model-v0")
+        // Every shipped id stays offered alongside it.
+        XCTAssertTrue(VisionModel.all.contains { $0.id == "google/gemini-2.5-flash-lite" })
+    }
+
+    /// The AI page tells the owner where the key goes while they paste it, so it must not claim
+    /// the Keychain — OpenRouterKeyStore deliberately uses a plain app preference.
+    func testTheKeyStoreIsAPlainPreferenceNotTheKeychain() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "CropTrimmer.key.\(UUID().uuidString)"))
+        try OpenRouterKeyStore.save("sk-test-value", defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: OpenRouterKeyStore.defaultsKey), "sk-test-value",
+                       "Stored as a readable preference; the AI page must say so rather than promising the Keychain")
+        OpenRouterKeyStore.clear(defaults: defaults)
+        XCTAssertNil(try OpenRouterKeyStore.read(defaults: defaults))
+    }
 }

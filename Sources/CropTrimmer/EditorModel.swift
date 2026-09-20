@@ -6,6 +6,9 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class EditorModel: ObservableObject {
+    @Published var filenameModel = UserDefaults.standard.string(forKey: "CropTrimmer.filenameModel") ?? "google/gemini-2.5-flash-lite" {
+        didSet { UserDefaults.standard.set(filenameModel, forKey: "CropTrimmer.filenameModel") }
+    }
     @Published var source: MediaSource?
     @Published var settings = EditSettings() { didSet { settingsChanged(from: oldValue) } }
     @Published private(set) var loops = MovieLoops()
@@ -28,7 +31,7 @@ final class EditorModel: ObservableObject {
     }
     /// Which operations show up in an exported file's name. Persisted, so it survives a launch.
     @Published var filenameOptions = FilenameOptions.load() { didSet { filenameOptions.save() } }
-    enum PreferencesTab: Hashable { case general, filenames, shortcuts }
+    enum PreferencesTab: Hashable { case general, ai, filenames, shortcuts }
     @Published var preferencesTab: PreferencesTab = .general
     /// Set by the view that hosts the Settings scene, so the model can open it (e.g. for `?`).
     var openPreferences: (() -> Void)?
@@ -77,6 +80,13 @@ final class EditorModel: ObservableObject {
     @Published private(set) var isSuggestingColor = false
     @Published var colorProviderEndpoint = UserDefaults.standard.string(forKey: "CropTrimmer.colorProviderEndpoint") ?? "" {
         didSet { UserDefaults.standard.set(colorProviderEndpoint, forKey: "CropTrimmer.colorProviderEndpoint") }
+    }
+    /// Size a fresh crop starts at, centred in the picture. Clamped to the source.
+    @Published var defaultCropWidth = UserDefaults.standard.object(forKey: "CropTrimmer.defaultCropWidth") as? Int ?? 320 {
+        didSet { UserDefaults.standard.set(defaultCropWidth, forKey: "CropTrimmer.defaultCropWidth") }
+    }
+    @Published var defaultCropHeight = UserDefaults.standard.object(forKey: "CropTrimmer.defaultCropHeight") as? Int ?? 240 {
+        didSet { UserDefaults.standard.set(defaultCropHeight, forKey: "CropTrimmer.defaultCropHeight") }
     }
     @Published var colorProviderModel = UserDefaults.standard.string(forKey: "CropTrimmer.colorProviderModel") ?? "" {
         didSet { UserDefaults.standard.set(colorProviderModel, forKey: "CropTrimmer.colorProviderModel") }
@@ -310,6 +320,10 @@ final class EditorModel: ObservableObject {
               let source, let loop = loops.selected,
               let endpoint = URL(string: colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
         let configuredModel = colorProviderModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if endpoint.host?.lowercased() == "openrouter.ai", configuredModel.isEmpty {
+            errorMessage = "Choose an OpenRouter model in Crop Trimmer Settings."
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
@@ -335,9 +349,10 @@ final class EditorModel: ObservableObject {
                         }
                         let environment = ProcessInfo.processInfo.environment
                         let isOpenRouter = endpoint.host?.lowercased() == "openrouter.ai"
-                        let apiKey = Self.colorProviderAPIKey(environment: environment, isOpenRouter: isOpenRouter)
+                        let savedKey = isOpenRouter ? try OpenRouterKeyStore.read() : nil
+                        let apiKey = savedKey ?? Self.colorProviderAPIKey(environment: environment, isOpenRouter: isOpenRouter)
                         guard !isOpenRouter || apiKey != nil else {
-                            throw MediaError.invalid("Set OPENROUTER_API_KEY before asking OpenRouter for a color suggestion.")
+                            throw MediaError.invalid("Add your OpenRouter API key in Crop Trimmer Settings.")
                         }
                         let configuration = try OpenAICompatibleColorSuggestionProvider.Configuration(endpoint: endpoint, model: configuredModel, apiKey: apiKey)
                         return try await OpenAICompatibleColorSuggestionProvider(configuration: configuration).suggest(request)
@@ -391,6 +406,25 @@ final class EditorModel: ObservableObject {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    func suggestFilename() async throws -> String {
+        guard let source, !isBusy, !showReview else { throw MediaError.invalid("Open a movie before suggesting a name.") }
+        let sourceID = source.id
+        let time = min(position, max(0, source.duration - 0.1))
+        let namingModel = filenameModel
+        let key = try OpenRouterKeyStore.read()
+            ?? Self.colorProviderAPIKey(environment: ProcessInfo.processInfo.environment, isOpenRouter: true)
+        guard let key else { throw MediaError.invalid("Add your OpenRouter API key in Settings.") }
+        // The crop tool picks what the model looks at; no crop means the whole frame.
+        let crop = settings.cropEnabled ? settings.crop : nil
+        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time, maximumSide: 512, crop: crop)
+        try Task.checkCancellation()
+        guard self.source?.id == sourceID else { throw CancellationError() }
+        let name = try await FilenameVisionProvider().suggest(framePNG: frame, model: namingModel, apiKey: key)
+        try Task.checkCancellation()
+        guard self.source?.id == sourceID else { throw CancellationError() }
+        return name
     }
 
     private func loadMovie(_ url: URL, preserving snapshot: (loops: MovieLoops, position: Double, identity: SourceIdentity)? = nil) {

@@ -7,9 +7,12 @@ struct EditorView: View {
     @ObservedObject var model: EditorModel
     @State private var editingFilename = false
     @State private var filenameDraft = ""
+    @State private var filenamePlayground = ""
+    @State private var filenameTask: Task<Void, Never>?
+    @State private var filenameRequestID: UUID?
     @State private var colorTool: ColorTool = .auto
     @State private var referenceUsesModel = false
-    @State private var showingColorModelSettings = false
+    @Environment(\.openSettings) private var openSettings
     @FocusState private var filenameFocused: Bool
 
     private enum ColorTool: String, CaseIterable {
@@ -39,13 +42,15 @@ struct EditorView: View {
         }
         .background(Color(red: 0.105, green: 0.105, blue: 0.115))
         .preferredColorScheme(.dark)
-        .onChange(of: model.source?.id) { _, _ in editingFilename = false }
+        .onChange(of: model.source?.id) { _, _ in cancelFilenameEdit() }
+        .onDisappear { cancelFilenameEdit() }
         .toolbar {
             ToolbarItem { Button(action: model.openPanel) { Label("Open Movie", systemImage: "folder") }.disabled(model.isBusy) }
             ToolbarItem { Text(model.source?.url.lastPathComponent ?? "Crop Trimmer").lineLimit(1)
                 .help(model.source.map { "Double-click to rename · " + $0.url.path } ?? "Open a movie to begin")
                 .onTapGesture(count: 2, perform: beginFilenameEdit) }
             ToolbarItem { Button { model.showReview = true } label: { Label("Exports (\(model.results.count))", systemImage: "square.stack") }.disabled(model.results.isEmpty) }
+            ToolbarItem { Button { openSettings() } label: { Label("Settings", systemImage: "gearshape") }.help("Settings (⌘,)") }
         }
         .sheet(isPresented: $model.showReview) { ReviewView(model: model) }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -242,15 +247,44 @@ struct EditorView: View {
                         TextField("Filename", text: $filenameDraft)
                             .textFieldStyle(.roundedBorder).focused($filenameFocused)
                             .onSubmit(commitFilename)
-                            .onExitCommand { editingFilename = false }
+                            .onExitCommand(perform: cancelFilenameEdit)
                         if !source.url.pathExtension.isEmpty {
                             Text("." + source.url.pathExtension).foregroundStyle(.secondary)
                         }
                     }
+                    Text(filenamePlayground.isEmpty ? " " : filenamePlayground)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .accessibilityLabel(filenamePlayground.isEmpty ? "No sample name yet" : "Sample name: \(filenamePlayground)")
+                    HStack(spacing: 8) {
+                        Button(action: suggestFilename) { Image(systemName: "sparkles") }
+                            .accessibilityLabel("Suggest a name with AI")
+                            .help("Describe the frame with AI")
+                            .disabled(filenameRequestID != nil)
+                        VisionModelPicker(title: "Model", selection: $model.filenameModel)
+                            .labelsHidden().frame(width: 150)
+                        .disabled(filenameRequestID != nil)
+                        Button {
+                            filenameTask?.cancel(); filenameRequestID = nil
+                            filenamePlayground = FilenameSuggestion.random()
+                        } label: { Image(systemName: "die.face.5") }
+                            .accessibilityLabel("Suggest a random name")
+                            .help("Random name")
+                        Spacer()
+                        if filenameRequestID != nil {
+                            ProgressView().controlSize(.small).accessibilityLabel("Suggesting filename")
+                        }
+                        Button { filenameDraft = filenamePlayground } label: {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                        .accessibilityLabel("Use the sample name")
+                        .help("Put the sample name in the field above")
+                        .disabled(filenamePlayground.isEmpty)
+                    }
                     Text("Renames the original file in its current folder.")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                     HStack {
-                        Button("Cancel") { editingFilename = false }
+                        Button("Cancel", action: cancelFilenameEdit)
                         Spacer()
                         Button("Rename", action: commitFilename)
                             .disabled(filenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -276,11 +310,36 @@ struct EditorView: View {
         guard let source = model.source, !model.isBusy, !model.showReview else { return }
         model.pause()
         filenameDraft = source.url.deletingPathExtension().lastPathComponent
+        filenamePlayground = ""
         editingFilename = true; filenameFocused = true
     }
 
     private func commitFilename() {
-        if model.renameSource(to: filenameDraft) { editingFilename = false }
+        if model.renameSource(to: filenameDraft) { cancelFilenameEdit() }
+    }
+
+    private func cancelFilenameEdit() {
+        filenameTask?.cancel(); filenameTask = nil; filenameRequestID = nil
+        filenamePlayground = ""
+        editingFilename = false
+    }
+
+    private func suggestFilename() {
+        let requestID = UUID()
+        filenameRequestID = requestID
+        filenameTask = Task { @MainActor in
+            defer {
+                if filenameRequestID == requestID { filenameRequestID = nil; filenameTask = nil }
+            }
+            do {
+                let name = try await model.suggestFilename()
+                guard !Task.isCancelled, filenameRequestID == requestID, editingFilename else { return }
+                filenamePlayground = name
+            } catch {
+                guard !Task.isCancelled, filenameRequestID == requestID, editingFilename else { return }
+                model.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private var queueSection: some View {
@@ -311,21 +370,11 @@ struct EditorView: View {
                     ProgressView().controlSize(.small)
                         .accessibilityLabel("Processing color correction")
                 }
-                Button { showingColorModelSettings = true } label: {
+                Button { openSettings() } label: {
                     Image(systemName: "gearshape")
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Color model settings")
-                .popover(isPresented: $showingColorModelSettings) {
-                    Form {
-                        TextField("Endpoint", text: $model.colorProviderEndpoint)
-                        TextField("Model", text: $model.colorProviderModel)
-                        HStack {
-                            Spacer()
-                            Button("Done") { showingColorModelSettings = false }
-                        }
-                    }.textFieldStyle(.roundedBorder).padding(16).frame(width: 360)
-                }
             }
             Picker("Color tool", selection: $colorTool) {
                 ForEach(ColorTool.allCases, id: \.self) { tool in
@@ -349,7 +398,7 @@ struct EditorView: View {
                     Button {
                         if referenceUsesModel {
                             if model.colorProviderEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                showingColorModelSettings = true
+                                openSettings()
                             } else {
                                 model.suggestWithColorProvider()
                             }

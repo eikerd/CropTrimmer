@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import CropTrimmerCore
 
@@ -11,6 +12,9 @@ struct PreferencesView: View {
             GeneralSettingsView(model: model)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(EditorModel.PreferencesTab.general)
+            ColorSettingsView(model: model)
+                .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag(EditorModel.PreferencesTab.ai)
             FilenameSettingsView(model: model)
                 .tabItem { Label("File Names", systemImage: "textformat") }
                 .tag(EditorModel.PreferencesTab.filenames)
@@ -39,11 +43,24 @@ private struct GeneralSettingsView: View {
             } header: { Text("Loops") }
 
             Section {
-                TextField("Endpoint", text: $model.colorProviderEndpoint)
-                TextField("Model", text: $model.colorProviderModel)
-                Text("Used by Auto correct and Reference matching. Leave Model blank to use the built-in LUT service instead of an OpenAI-compatible endpoint.")
+                HStack {
+                    Text("Default size")
+                    Spacer()
+                    // No placeholder: a Form gives a TextField's title its own label column, and
+                    // "Width"/"Height" wrapped to two lines beside the value. The row already
+                    // says what these are, and the accessibility labels carry it for VoiceOver.
+                    TextField("", value: $model.defaultCropWidth, format: .number)
+                        .labelsHidden().frame(width: 64).multilineTextAlignment(.trailing)
+                        .accessibilityLabel("Default crop width in pixels")
+                    Text("×").foregroundStyle(.secondary)
+                    TextField("", value: $model.defaultCropHeight, format: .number)
+                        .labelsHidden().frame(width: 64).multilineTextAlignment(.trailing)
+                        .accessibilityLabel("Default crop height in pixels")
+                }
+            } header: { Text("Crop") } footer: {
+                Text("The size a new crop starts at. Colour and naming models live on the AI page.")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
-            } header: { Text("Color correction") }
+            }
         }
         .formStyle(.grouped)
         .padding(20)
@@ -70,6 +87,8 @@ private struct FilenameSettingsView: View {
                 Toggle("Trim", isOn: $model.filenameOptions.includeTrim)
                 Toggle("Crop", isOn: $model.filenameOptions.includeCrop)
                 Toggle("Speed", isOn: $model.filenameOptions.includeSpeed)
+                VisionModelPicker(title: "Naming model", selection: $model.filenameModel)
+                    .help("The OpenRouter model that describes a frame when you ask for a suggested name.")
             } header: {
                 Text("Name exports after")
             } footer: {
