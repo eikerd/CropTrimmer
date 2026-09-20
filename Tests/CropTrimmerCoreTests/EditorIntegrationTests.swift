@@ -360,4 +360,56 @@ final class EditorIntegrationTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(model.loops.selected).start, parked + 3, accuracy: 0.000001)
         model.endLoopDrag()
     }
+
+    /// Play-all steps from one loop to the next in timeline order, wraps at the last, and plays
+    /// nothing in between — each loop bringing its own speed with it.
+    @MainActor
+    func testPlayAllLoopsRotatesThroughEveryLoopAndWraps() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-all-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("All.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "12", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy && model.source != nil }
+        try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+
+        // Three short loops with gaps between them, so "nothing in between" is observable.
+        var ids: [UUID] = []
+        for (start, end) in [(0.0, 0.6), (4.0, 4.6), (8.0, 8.6)] {
+            model.seek(start)
+            model.addLoop()
+            let loop = try XCTUnwrap(model.loops.selected)
+            var edit = loop.settings; edit.start = start; edit.end = end
+            XCTAssertNil(model.updateLoop(id: loop.id, settings: edit))
+            ids.append(loop.id)
+        }
+        XCTAssertEqual(model.loops.ranges.map(\.id), ids)
+
+        model.playAllLoops()
+        XCTAssertEqual(model.playbackMode, .allLoops)
+        XCTAssertTrue(model.playsAllLoops, "Every loop reads as selected while they are all queued")
+        XCTAssertEqual(model.loops.selectedID, ids[0], "Play-all starts at the first loop")
+
+        // Loop 1 ends -> loop 2, loop 2 ends -> loop 3, loop 3 ends -> back to loop 1.
+        for expected in [ids[1], ids[2], ids[0]] {
+            try await waitUntil({ model.loops.selectedID == expected }, timeout: 8)
+            XCTAssertEqual(model.loops.selectedID, expected)
+            let loop = try XCTUnwrap(model.loops.selected)
+            XCTAssertGreaterThanOrEqual(model.position, loop.start - 0.2)
+            XCTAssertLessThan(model.position, loop.end + 0.4, "Playback left the loop's range")
+            // The player reports .waitingToPlayAtSpecifiedRate for a moment after the seek, so
+            // "still playing" is checked as a state it returns to, not as an instant.
+            try await waitUntil({ model.isPlaying }, timeout: 3)
+        }
+        model.pause()
+    }
 }

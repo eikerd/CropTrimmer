@@ -8,8 +8,15 @@ public enum Quality: String, CaseIterable, Codable, Sendable {
 public enum ResolvedMethod: String, Codable, Sendable { case copy = "Fast trim", encode = "Re-encode" }
 public enum PlaybackMode: String, CaseIterable, Codable, Sendable {
     case repeatSelection = "A–B repeat", whole = "Whole movie", once = "Play selection once"
+    /// Every loop in turn, in timeline order, wrapping round at the last one and playing nothing
+    /// in between. Each loop keeps its own speed while it is the one playing.
+    case allLoops = "Play all loops"
     /// The mode a single click on the transport's mode button moves to, VLC-style.
-    public var next: Self { switch self { case .repeatSelection: .once; case .once: .whole; case .whole: .repeatSelection } }
+    public var next: Self {
+        switch self { case .repeatSelection: .once; case .once: .allLoops; case .allLoops: .whole; case .whole: .repeatSelection }
+    }
+    /// True where playback is bounded by a loop's A and B rather than by the whole movie.
+    public var followsLoop: Bool { self != .whole }
 }
 
 public struct PixelRect: Codable, Equatable, Sendable {

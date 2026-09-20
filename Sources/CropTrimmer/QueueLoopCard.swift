@@ -11,10 +11,13 @@ struct QueueLoopCard: View {
     @State private var cropRevision = UUID()
     @State private var timeRevision = UUID()
 
-    private var selected: Bool { model.loops.selectedID == loop.id }
+    /// "Selected" here is about how the card reads: while every loop is queued to play, they all
+    /// look selected. Actions that can only apply to one loop use `isTheSelectedLoop`.
+    private var selected: Bool { isTheSelectedLoop || model.playsAllLoops }
+    private var isTheSelectedLoop: Bool { model.loops.selectedID == loop.id }
     private var edit: EditSettings { model.loops.ranges.first { $0.id == loop.id }?.settings ?? loop.settings }
     private var locked: Bool { edit.cropAspectRatio != nil && edit.cropAspectRatio != .free }
-    private var adjusting: Bool { selected && model.cropAdjusting }
+    private var adjusting: Bool { isTheSelectedLoop && model.cropAdjusting }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

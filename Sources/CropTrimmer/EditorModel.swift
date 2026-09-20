@@ -102,8 +102,11 @@ final class EditorModel: ObservableObject {
         endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self, let item = note.object as? AVPlayerItem, item === self.player.currentItem else { return }
-                if self.playbackMode == .repeatSelection { self.loopSelection() }
-                else { self.pause() }
+                switch self.playbackMode {
+                case .repeatSelection: self.loopSelection()
+                case .allLoops: self.advanceToNextLoop()
+                default: self.pause()
+                }
             }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -505,7 +508,7 @@ final class EditorModel: ObservableObject {
 
     private func resumePlayback() {
         guard let source, !isBusy, !showReview, !cropAdjusting else { return }
-        if playbackMode != .whole && (position < settings.start || position >= settings.end - 0.001) { seek(settings.start) }
+        if playbackMode.followsLoop && (position < settings.start || position >= settings.end - 0.001) { seek(settings.start) }
         else if position >= source.duration - 0.001 { seek(0) }
         wantsPlayback = true; player.defaultRate = Float(speed); player.play(); player.rate = Float(speed); isPlaying = true
     }
@@ -727,15 +730,42 @@ final class EditorModel: ObservableObject {
 
     private func updateBoundaryObserver() {
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver); self.boundaryObserver = nil }
-        guard source != nil, playbackMode != .whole, settings.end > settings.start else { return }
+        guard source != nil, playbackMode.followsLoop, settings.end > settings.start else { return }
         boundaryObserver = player.addBoundaryTimeObserver(forTimes: [NSValue(time: CMTime(seconds: settings.end + playbackOrigin, preferredTimescale: 60000))], queue: .main) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.wantsPlayback else { return }
-                if self.playbackMode == .repeatSelection { self.loopSelection() }
-                else { self.pause(); self.seek(self.settings.end) }
+                switch self.playbackMode {
+                case .repeatSelection: self.loopSelection()
+                case .allLoops: self.advanceToNextLoop()
+                default: self.pause(); self.seek(self.settings.end)
+                }
             }
         }
     }
+    /// True while every loop is queued to play, which is also when they all read as selected.
+    var playsAllLoops: Bool { playbackMode == .allLoops && !loops.ranges.isEmpty }
+
+    /// Turns on all-loops playback and starts at the first loop. The button beside the chips.
+    func playAllLoops() {
+        guard !isBusy, !showReview, source != nil, !loops.ranges.isEmpty else { return }
+        playbackMode = .allLoops
+        if let first = loops.ranges.first { selectLoop(first.id, seekToStart: true) }
+        if !wantsPlayback { togglePlayback() }
+    }
+
+    /// The next loop in timeline order, wrapping at the end. Selecting it applies its own
+    /// settings — speed included — and playback carries straight on into it.
+    private func advanceToNextLoop() {
+        guard !looping, wantsPlayback, !isBusy, !cropAdjusting, !showReview, source != nil,
+              playbackMode == .allLoops, !loops.ranges.isEmpty else { return }
+        let index = loops.ranges.firstIndex { $0.id == loops.selectedID } ?? 0
+        let next = loops.ranges[(index + 1) % loops.ranges.count]
+        looping = true
+        selectLoop(next.id, seekToStart: true)
+        looping = false
+        if wantsPlayback { player.play(); player.rate = Float(speed); isPlaying = true }
+    }
+
     private func loopSelection() {
         guard !looping, wantsPlayback, !isBusy, !cropAdjusting, !showReview, source != nil, playbackMode == .repeatSelection else { return }
         looping = true
