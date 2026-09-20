@@ -11,14 +11,18 @@ struct QueueLoopCard: View {
     @State private var cropRevision = UUID()
     @State private var timeRevision = UUID()
 
-    private var selected: Bool { model.loops.selectedID == loop.id }
+    /// "Selected" here is about how the card reads: while every loop is queued to play, they all
+    /// look selected. Actions that can only apply to one loop use `isTheSelectedLoop`.
+    private var selected: Bool { isTheSelectedLoop || model.playsAllLoops }
+    private var isTheSelectedLoop: Bool { model.loops.selectedID == loop.id }
     private var edit: EditSettings { model.loops.ranges.first { $0.id == loop.id }?.settings ?? loop.settings }
     private var locked: Bool { edit.cropAspectRatio != nil && edit.cropAspectRatio != .free }
-    private var adjusting: Bool { selected && model.cropAdjusting }
+    private var adjusting: Bool { isTheSelectedLoop && model.cropAdjusting }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             timeRow
+            speedRow
             ColorControlsView(model: model, loopID: loop.id, number: number)
             cropSection
             exportSection
@@ -35,7 +39,6 @@ struct QueueLoopCard: View {
         .contextMenu {
             Button("Set loop to whole movie", action: resetRange)
             Button("Delete Loop \(number)", systemImage: "trash", role: .destructive) { model.removeLoop(loop.id) }
-                .disabled(model.loops.ranges.count < 2)
         }
     }
 
@@ -54,8 +57,20 @@ struct QueueLoopCard: View {
             }.help("Duration in seconds").accessibilityLabel("Duration \(queueSeconds(edit.duration)) seconds")
             Button { model.removeLoop(loop.id) } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
-                .disabled(model.loops.ranges.count < 2)
                 .help("Delete Loop \(number)").accessibilityLabel("Delete Loop \(number)")
+        }
+    }
+
+    /// The loop's own speed: the same number the preview plays at and the export renders at.
+    private var speedRow: some View {
+        HStack(spacing: 4) {
+            Text("Speed").foregroundStyle(.secondary)
+            Picker("Speed", selection: Binding(get: { edit.speed }, set: { value in update { $0.speed = value } })) {
+                ForEach(EditSettings.speeds, id: \.self) { Text(EditSettings.speedLabel($0)).tag($0) }
+            }.labelsHidden().fixedSize()
+                .accessibilityLabel("Loop \(number) speed")
+                .help("Plays and renders Loop \(number) at this speed. The export runs \(queueSeconds(edit.outputDuration))s.")
+            Spacer(minLength: 0)
         }
     }
 
@@ -207,7 +222,8 @@ struct QueueLoopCard: View {
     private var exportHelp: String {
         guard let source = model.source else { return "" }
         let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
-            trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number)
+            trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number,
+            speed: edit.speed, options: model.filenameOptions)
             + "." + (model.queuePlans[loop.id]?.fileExtension ?? "mp4")
         return "Saves \(filename) beside the original. An extra number is added if that name exists."
     }

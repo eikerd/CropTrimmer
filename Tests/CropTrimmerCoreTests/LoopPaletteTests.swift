@@ -33,7 +33,6 @@ final class LoopPaletteTests: XCTestCase {
         XCTAssertEqual(loops.selected?.colorIndex, 4)
         XCTAssertTrue(loops.add(length: 5)); XCTAssertTrue(loops.add(length: 5))
         XCTAssertEqual(Set(loops.ranges.map { LoopPalette.hue(of: $0.colorIndex) }).count, 3)
-        XCTAssertTrue(loops.add(length: 5) == false)
         XCTAssertTrue(loops.select(first))
         XCTAssertTrue(loops.move(first, originalStart: 0, originalEnd: 5, by: 20))
         XCTAssertTrue(loops.updateSelected(start: 21, end: 24))

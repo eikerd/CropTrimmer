@@ -82,6 +82,16 @@ final class EditorIntegrationTests: XCTestCase {
         try await waitUntil { !model.isBusy }
         XCTAssertNotNil(model.source, model.errorMessage ?? "Open failed")
         try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+        // A movie opens bare: no default loop, the whole timeline in play.
+        XCTAssertTrue(model.loops.ranges.isEmpty)
+        // Nothing to plan with no loops, so the status must not stall mid-sentence.
+        try await waitUntil { !model.status.contains("Checking export methods") }
+        XCTAssertTrue(model.status.hasPrefix("Ready"), model.status)
+        XCTAssertEqual(model.settings.start, 0); XCTAssertEqual(model.settings.end, model.source?.duration)
+        // + puts the first loop's A at the playhead.
+        model.seek(2); model.addLoop()
+        XCTAssertEqual(model.loops.selected?.start, 2); XCTAssertEqual(model.loops.selected?.end, 7)
+        XCTAssertEqual(model.position, 2)
         model.settings.start = 1; model.settings.end = 3
         let handleOriginal = try XCTUnwrap(model.loops.selected)
         model.beginLoopDrag(handleOriginal.id)
@@ -132,6 +142,13 @@ final class EditorIntegrationTests: XCTestCase {
         model.togglePlayback()
         XCTAssertFalse(model.cropAdjusting)
         try await waitUntil { model.isPlaying && model.position > 1.2 }
+        model.setSpeed(0.5)
+        XCTAssertEqual(model.player.rate, 0.5, "A new speed applies at once while playing")
+        XCTAssertEqual(model.loops.selected?.settings.speed, 0.5, "The speed belongs to the loop, so the export carries it")
+        XCTAssertTrue(model.speedIsRendered)
+        model.setSpeed(3)
+        XCTAssertEqual(model.speed, 0.5, "Speeds outside the menu are refused")
+        model.setSpeed(1)
         model.togglePlayback()
         XCTAssertFalse(model.isPlaying)
         model.stop()
@@ -294,8 +311,159 @@ final class EditorIntegrationTests: XCTestCase {
         try await waitUntil { !model.isBusy && model.source != nil }
         XCTAssertEqual(model.results.last?.url.lastPathComponent, "Reopened.mp4")
         XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(model.results.last).url.path))
+    }
 
+    /// The playhead rides on A while a loop is dragged, so it must not also be a snap target:
+    /// otherwise every update finds a target exactly where the drag just put the playhead, and the
+    /// loop sticks instead of following the pointer.
+    @MainActor
+    func testDraggingDoesNotSnapToThePlayheadThatFollowsIt() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-drag-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Drag.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "30", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy && model.source != nil }
 
+        // One loop in open space, far from 0, the movie's end and the playhead's starting point.
+        model.seek(0)
+        model.addLoop()
+        let loop = try XCTUnwrap(model.loops.selected)
+        XCTAssertNil(model.updateLoop(id: loop.id, settings: {
+            var edit = loop.settings; edit.start = 10; edit.end = 11; return edit
+        }()))
+        let original = try XCTUnwrap(model.loops.selected)
+        model.beginLoopDrag(original.id)
+        var lastStart = original.start
+        for step in 0...4 {
+            let delta = 1.0 + Double(step) * 0.3
+            model.moveLoop(original.id, originalStart: original.start, originalEnd: original.end, by: delta, tolerance: 0.5)
+            let start = try XCTUnwrap(model.loops.selected).start
+            XCTAssertGreaterThan(start, lastStart, "The loop stopped following the pointer at step \(step)")
+            lastStart = start
+        }
+        // Released, the playhead is a target again: the next drag can snap to where it sits.
+        model.endLoopDrag()
+        let parked = model.position
+        let second = try XCTUnwrap(model.loops.selected)
+        model.beginLoopDrag(second.id)
+        model.moveLoop(second.id, originalStart: second.start, originalEnd: second.end, by: 3, tolerance: 0.5)
+        XCTAssertEqual(try XCTUnwrap(model.loops.selected).start, parked + 3, accuracy: 0.000001)
+        model.endLoopDrag()
+    }
 
+    /// Play-all steps from one loop to the next in timeline order, wraps at the last, and plays
+    /// nothing in between — each loop bringing its own speed with it.
+    @MainActor
+    func testPlayAllLoopsRotatesThroughEveryLoopAndWraps() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-all-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("All.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "12", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy && model.source != nil }
+        try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+
+        // Three short loops with gaps between them, so "nothing in between" is observable.
+        var ids: [UUID] = []
+        for (start, end) in [(0.0, 0.6), (4.0, 4.6), (8.0, 8.6)] {
+            model.seek(start)
+            model.addLoop()
+            let loop = try XCTUnwrap(model.loops.selected)
+            var edit = loop.settings; edit.start = start; edit.end = end
+            XCTAssertNil(model.updateLoop(id: loop.id, settings: edit))
+            ids.append(loop.id)
+        }
+        XCTAssertEqual(model.loops.ranges.map(\.id), ids)
+
+        model.playAllLoops()
+        XCTAssertEqual(model.playbackMode, .allLoops)
+        XCTAssertTrue(model.playsAllLoops, "Every loop reads as selected while they are all queued")
+        XCTAssertEqual(model.loops.selectedID, ids[0], "Play-all starts at the first loop")
+
+        // Loop 1 ends -> loop 2, loop 2 ends -> loop 3, loop 3 ends -> back to loop 1.
+        for expected in [ids[1], ids[2], ids[0]] {
+            try await waitUntil({ model.loops.selectedID == expected }, timeout: 8)
+            XCTAssertEqual(model.loops.selectedID, expected)
+            let loop = try XCTUnwrap(model.loops.selected)
+            XCTAssertGreaterThanOrEqual(model.position, loop.start - 0.2)
+            XCTAssertLessThan(model.position, loop.end + 0.4, "Playback left the loop's range")
+            // The player reports .waitingToPlayAtSpecifiedRate for a moment after the seek, so
+            // "still playing" is checked as a state it returns to, not as an instant.
+            try await waitUntil({ model.isPlaying }, timeout: 3)
+        }
+        model.pause()
+
+        // Deleting every loop while play-all runs must leave the mode, not sit in it with a
+        // player that has quietly stopped — that state needed two clicks to start playing again.
+        model.playAllLoops()
+        try await waitUntil({ model.isPlaying }, timeout: 3)
+        for id in model.loops.ranges.map(\.id) { model.removeLoop(id) }
+        XCTAssertTrue(model.loops.ranges.isEmpty)
+        model.seek(11.5)
+        try await waitUntil({ !model.isPlaying || model.playbackMode != .allLoops }, timeout: 8)
+        XCTAssertNotEqual(model.playbackMode, .allLoops, "Play-all steps aside once there is nothing to rotate through")
+        model.togglePlayback()
+        try await waitUntil({ model.isPlaying }, timeout: 3)
+        XCTAssertTrue(model.isPlaying, "One click restarts playback, not two")
+        model.pause()
+    }
+
+    /// A keyboard nudge is a whole drag. If it never ends, the playhead it froze leaks into the
+    /// next mouse drag and that drag snaps to a stale position.
+    @MainActor
+    func testAKeyboardNudgeDoesNotLeaveAFrozenPlayheadBehind() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-nudge-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Nudge.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "30", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy && model.source != nil }
+
+        model.seek(0)
+        model.addLoop()
+        let loop = try XCTUnwrap(model.loops.selected)
+        XCTAssertNil(model.updateLoop(id: loop.id, settings: {
+            var edit = loop.settings; edit.start = 20; edit.end = 21; return edit
+        }()))
+        // Nudge with the playhead parked just short of where the next drag will land, so a
+        // playhead left frozen here is close enough to pull that drag onto it.
+        model.seek(19.85)
+        model.nudgeSelectedLoop(by: 0.1)
+        let original = try XCTUnwrap(model.loops.selected)
+        // The live playhead moves far away; only a leaked 19.85 could still act as a target.
+        model.seek(5)
+        model.beginLoopDrag(original.id)
+        model.moveLoop(original.id, originalStart: original.start, originalEnd: original.end, by: -0.2, tolerance: 0.5)
+        XCTAssertEqual(try XCTUnwrap(model.loops.selected).start, original.start - 0.2, accuracy: 0.000001,
+                       "The drag followed the pointer instead of snapping to a playhead left frozen by the nudge")
+        model.endLoopDrag()
     }
 }
