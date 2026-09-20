@@ -37,8 +37,9 @@ public actor MediaEngine {
         let rotationValue = side.compactMap { number($0["rotation"]) }.first
             ?? number((video["tags"] as? [String: Any])?["rotate"]) ?? 0
         let rotation = ((Int(rotationValue.rounded()) % 360) + 360) % 360
+        let containerStart = number(format["start_time"]) ?? start
+        let seekOffset = containerStart.isFinite ? start - containerStart : 0
         var restrictions: [String] = []
-        if abs(start - (number(format["start_time"]) ?? start)) > 0.025 { restrictions.append("different video and container timeline origins") }
         if abs(rotationValue - rotationValue.rounded()) > 0.01 || rotation % 90 != 0 { restrictions.append("non-right-angle rotation") }
         let sar = video["sample_aspect_ratio"] as? String ?? "1:1"
         if !["1:1", "0:1", "N/A"].contains(sar) { restrictions.append("non-square pixels") }
@@ -65,7 +66,7 @@ public actor MediaEngine {
                            videoCodec: video["codec_name"] as? String ?? "unknown",
                            audioCount: streams.filter { ($0["codec_type"] as? String) == "audio" }.count,
                            subtitleCount: streams.filter { ($0["codec_type"] as? String) == "subtitle" }.count,
-                           format: format["format_name"] as? String ?? "unknown", startTime: start,
+                           format: format["format_name"] as? String ?? "unknown", startTime: start, seekOffset: seekOffset,
                            encodingRestriction: restrictions.isEmpty ? nil : "Encoding is not supported for " + restrictions.joined(separator: ", ") + ".",
                            color: SourceColorDescription(pixelFormat: pixel, primaries: primaries, transfer: transfer, matrix: matrix, range: range))
     }
@@ -159,10 +160,10 @@ public actor MediaEngine {
         try await validateOutput(active, output: output)
         // Accurate seek discards frames before A. Locate the first retained presentation point
         // independently, so review does not pretend arbitrary decimal A is a source frame boundary.
-        let frames = try await fingerprints(active.source.url, from: active.settings.start, length: min(2, active.duration), origin: active.source.startTime)
+        let frames = try await fingerprints(active.source, from: active.settings.start, length: min(2, active.duration), origin: active.source.startTime)
         guard let first = frames.first else { throw MediaError.failed("The selected range contains no video frames.") }
         let actualStart = first.time - active.source.startTime
-        let endFrames = try await fingerprints(active.source.url, from: max(active.settings.start, active.settings.end - 2), length: min(2, active.duration), origin: active.source.startTime)
+        let endFrames = try await fingerprints(active.source, from: max(active.settings.start, active.settings.end - 2), length: min(2, active.duration), origin: active.source.startTime)
         guard let last = endFrames.last else { throw MediaError.failed("Could not validate the selected ending frame.") }
         let actualEnd = last.time + last.duration - active.source.startTime
         try unchanged(plan.source)
@@ -224,7 +225,7 @@ public actor MediaEngine {
 
     private func encodeArguments(_ plan: ExportPlan, output: URL, lutFile: URL? = nil) -> [String] {
         // -t is an output limit, so at 0.5x two source seconds have to be allowed four output seconds.
-        var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", decimal(plan.settings.start), "-i", plan.source.url.path,
+        var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", decimal(seek(plan.source, plan.settings.start)), "-i", plan.source.url.path,
                     "-t", decimal(plan.settings.outputDuration), "-map", "0:V:0", "-map", "0:a:0?", "-map_metadata", "-1", "-map_chapters", "-1"]
         var filters: [String] = []
         let speed = plan.settings.speed
@@ -277,10 +278,10 @@ public actor MediaEngine {
     private func copyArguments(_ plan: ExportPlan, output: URL) -> [String] {
         // Video decoding order can lead presentation by several frames. Separate demux inputs
         // let video stop before the next GOP without truncating the audio by that same delay.
-        var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", decimal(plan.plannedStart),
+        var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", decimal(seek(plan.source, plan.plannedStart)),
                     "-t", decimal((plan.copyCutEnd ?? plan.plannedEnd) - plan.plannedStart), "-i", plan.source.url.path]
         if plan.source.audioCount > 0 {
-            args += ["-ss", decimal(plan.plannedStart), "-t", decimal(plan.duration), "-i", plan.source.url.path]
+            args += ["-ss", decimal(seek(plan.source, plan.plannedStart)), "-t", decimal(plan.duration), "-i", plan.source.url.path]
         }
         args += ["-map", "0:V:0"]
         if plan.source.audioCount > 0 { args += ["-map", "1:a"] }
@@ -288,9 +289,14 @@ public actor MediaEngine {
         return args
     }
 
+    /// An editor time as an input `-ss`, which FFmpeg measures from the container's start.
+    private func seek(_ source: MediaSource, _ time: Double) -> Double { max(0, time + source.seekOffset) }
+
     private struct Fingerprint { let time: Double; let duration: Double; let hash: String }
-    private func fingerprints(_ url: URL, from start: Double, length: Double, origin: Double = 0) async throws -> [Fingerprint] {
-        let bytes = try await run("ffmpeg", arguments: ["-hide_banner", "-loglevel", "error", "-nostdin", "-copyts", "-ss", decimal(max(0, start)), "-i", url.path,
+    /// `start` counts from the first picture; `origin` is that picture's timestamp, for the absolute `-to`.
+    private func fingerprints(_ source: MediaSource, from start: Double, length: Double, origin: Double = 0) async throws -> [Fingerprint] {
+        let url = source.url
+        let bytes = try await run("ffmpeg", arguments: ["-hide_banner", "-loglevel", "error", "-nostdin", "-copyts", "-ss", decimal(seek(source, start)), "-i", url.path,
                     "-to", decimal(origin + start + length), "-map", "0:V:0", "-an", "-fps_mode", "passthrough", "-enc_time_base", "-1", "-f", "framemd5", "pipe:1"], outputLimit: 2_000_000)
         let lines = String(decoding: bytes, as: UTF8.self).split(separator: "\n")
         var timeBase = 0.0
@@ -307,10 +313,10 @@ public actor MediaEngine {
     }
 
     private func verifyCopy(_ plan: ExportPlan, output: MediaSource) async throws -> (Double, Double) {
-        let firstOutput = try await fingerprints(output.url, from: 0, length: min(1, output.duration), origin: output.startTime)
-        let lastOutput = try await fingerprints(output.url, from: max(0, output.duration - 1), length: min(1, output.duration), origin: output.startTime)
-        let firstSource = try await fingerprints(plan.source.url, from: max(0, plan.plannedStart - 1), length: 3)
-        let lastSource = try await fingerprints(plan.source.url, from: max(0, plan.plannedEnd - 2), length: 3)
+        let firstOutput = try await fingerprints(output, from: 0, length: min(1, output.duration), origin: output.startTime)
+        let lastOutput = try await fingerprints(output, from: max(0, output.duration - 1), length: min(1, output.duration), origin: output.startTime)
+        let firstSource = try await fingerprints(plan.source, from: max(0, plan.plannedStart - 1), length: 3)
+        let lastSource = try await fingerprints(plan.source, from: max(0, plan.plannedEnd - 2), length: 3)
         guard let first = firstOutput.first, let last = lastOutput.last else { throw MediaError.failed("The copied video has no decodable boundary frames.") }
         let aMatches = firstSource.filter { $0.hash == first.hash }
         let bMatches = lastSource.filter { $0.hash == last.hash }

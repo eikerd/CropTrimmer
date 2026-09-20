@@ -61,10 +61,13 @@ public struct MediaSource: Identifiable, Sendable {
     public let encodedWidth: Int; public let encodedHeight: Int; public let rotation: Int
     public let fps: Double; public let videoCodec: String; public let audioCount: Int
     public let subtitleCount: Int; public let format: String; public let startTime: Double
+    /// How far the first picture sits after the container's own start. FFmpeg's input `-ss` counts
+    /// from the container, the editor counts from the picture, so every seek adds this.
+    public let seekOffset: Double
     public let encodingRestriction: String?
     public let color: SourceColorDescription
-    public init(id: UUID = UUID(), url: URL, identity: SourceIdentity, duration: Double, width: Int, height: Int, encodedWidth: Int, encodedHeight: Int, rotation: Int, fps: Double, videoCodec: String, audioCount: Int, subtitleCount: Int, format: String, startTime: Double = 0, encodingRestriction: String? = nil, color: SourceColorDescription = SourceColorDescription()) {
-        self.id = id; self.url = url; self.identity = identity; self.duration = duration; self.width = width; self.height = height; self.encodedWidth = encodedWidth; self.encodedHeight = encodedHeight; self.rotation = rotation; self.fps = fps; self.videoCodec = videoCodec; self.audioCount = audioCount; self.subtitleCount = subtitleCount; self.format = format; self.startTime = startTime; self.encodingRestriction = encodingRestriction; self.color = color
+    public init(id: UUID = UUID(), url: URL, identity: SourceIdentity, duration: Double, width: Int, height: Int, encodedWidth: Int, encodedHeight: Int, rotation: Int, fps: Double, videoCodec: String, audioCount: Int, subtitleCount: Int, format: String, startTime: Double = 0, seekOffset: Double = 0, encodingRestriction: String? = nil, color: SourceColorDescription = SourceColorDescription()) {
+        self.id = id; self.url = url; self.identity = identity; self.duration = duration; self.width = width; self.height = height; self.encodedWidth = encodedWidth; self.encodedHeight = encodedHeight; self.rotation = rotation; self.fps = fps; self.videoCodec = videoCodec; self.audioCount = audioCount; self.subtitleCount = subtitleCount; self.format = format; self.startTime = startTime; self.seekOffset = seekOffset; self.encodingRestriction = encodingRestriction; self.color = color
     }
 }
 public struct EditSettings: Codable, Equatable, Sendable {

@@ -156,6 +156,34 @@ final class MediaEngineTests: XCTestCase {
         XCTAssertLessThan(error, 4)
     }
 
+    func testVideoStartingAfterTheContainerEncodesFromTheChosenFrame() async throws {
+        // Audio at 0 and a first picture a few frames later is what phones and screen recorders write.
+        let original = try fixture()
+        let delayed = directory.appendingPathComponent("delayed.mp4")
+        try ff(["-itsoffset", "0.2", "-i", original.path, "-f", "lavfi", "-i", "sine=frequency=440:duration=4.2",
+                "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", delayed.path])
+        let engine = MediaEngine()
+        let source = try await engine.inspect(delayed)
+        XCTAssertEqual(source.startTime, 0.2, accuracy: 0.001)
+        XCTAssertEqual(source.seekOffset, 0.2, accuracy: 0.001)
+        XCTAssertNil(source.encodingRestriction)
+        var edit = EditSettings(source: source); edit.start = 1; edit.end = 2
+        let plan = try await engine.plan(source: source, settings: edit)
+        XCTAssertEqual(plan.method, .encode)
+        let result = try await engine.export(plan: plan, to: directory.appendingPathComponent("delayed-out.mp4")) { _, _ in }
+        XCTAssertEqual(result.actualStart, 1, accuracy: 0.001)
+        XCTAssertEqual(result.actualEnd, 2, accuracy: 0.001)
+        XCTAssertEqual(result.duration, 1, accuracy: 0.08)
+        // One second into the picture, not one second into the container (which is the frame at 0.8).
+        let expectedPixels = try ffData(["-ss", "1", "-i", original.path, "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "-"])
+        let earlyPixels = try ffData(["-ss", "0.8", "-i", original.path, "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "-"])
+        let actualPixels = try ffData(["-i", result.url.path, "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "-"])
+        XCTAssertEqual(actualPixels.count, expectedPixels.count)
+        func distance(_ a: Data, _ b: Data) -> Double { zip(a, b).reduce(0.0) { $0 + abs(Double($1.0) - Double($1.1)) } / Double(a.count) }
+        XCTAssertLessThan(distance(expectedPixels, actualPixels), 4)
+        XCTAssertLessThan(distance(expectedPixels, actualPixels), distance(earlyPixels, actualPixels))
+    }
+
     func testInFlightCancellationRemovesPartialOutput() async throws {
         let url = directory.appendingPathComponent("large.mp4")
         try ff(["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "12", "-c:v", "libx264", "-preset", "ultrafast", url.path])
