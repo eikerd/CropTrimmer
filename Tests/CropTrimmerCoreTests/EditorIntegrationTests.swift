@@ -311,8 +311,53 @@ final class EditorIntegrationTests: XCTestCase {
         try await waitUntil { !model.isBusy && model.source != nil }
         XCTAssertEqual(model.results.last?.url.lastPathComponent, "Reopened.mp4")
         XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(model.results.last).url.path))
+    }
 
+    /// The playhead rides on A while a loop is dragged, so it must not also be a snap target:
+    /// otherwise every update finds a target exactly where the drag just put the playhead, and the
+    /// loop sticks instead of following the pointer.
+    @MainActor
+    func testDraggingDoesNotSnapToThePlayheadThatFollowsIt() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-drag-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Drag.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "30", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy && model.source != nil }
 
-
+        // One loop in open space, far from 0, the movie's end and the playhead's starting point.
+        model.seek(0)
+        model.addLoop()
+        let loop = try XCTUnwrap(model.loops.selected)
+        XCTAssertNil(model.updateLoop(id: loop.id, settings: {
+            var edit = loop.settings; edit.start = 10; edit.end = 11; return edit
+        }()))
+        let original = try XCTUnwrap(model.loops.selected)
+        model.beginLoopDrag(original.id)
+        var lastStart = original.start
+        for step in 0...4 {
+            let delta = 1.0 + Double(step) * 0.3
+            model.moveLoop(original.id, originalStart: original.start, originalEnd: original.end, by: delta, tolerance: 0.5)
+            let start = try XCTUnwrap(model.loops.selected).start
+            XCTAssertGreaterThan(start, lastStart, "The loop stopped following the pointer at step \(step)")
+            lastStart = start
+        }
+        // Released, the playhead is a target again: the next drag can snap to where it sits.
+        model.endLoopDrag()
+        let parked = model.position
+        let second = try XCTUnwrap(model.loops.selected)
+        model.beginLoopDrag(second.id)
+        model.moveLoop(second.id, originalStart: second.start, originalEnd: second.end, by: 3, tolerance: 0.5)
+        XCTAssertEqual(try XCTUnwrap(model.loops.selected).start, parked + 3, accuracy: 0.000001)
+        model.endLoopDrag()
     }
 }

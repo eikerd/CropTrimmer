@@ -629,8 +629,14 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// The playhead as it stood when the drag began. During a drag the playhead is seeked to the
+    /// edge being dragged, so reading it live would make the loop snap to itself: every update
+    /// would find a target sitting exactly where the drag just put it, and the loop would stick.
+    private var dragPlayhead: Double?
+
     func beginLoopDrag(_ id: UUID) {
         guard !isBusy, !showReview, loops.ranges.contains(where: { $0.id == id }) else { return }
+        if dragPlayhead == nil { dragPlayhead = position }
         selectLoop(id, seekToStart: false)
         clearInputDrafts()
     }
@@ -642,7 +648,7 @@ final class EditorModel: ObservableObject {
     /// derives it from a pixel distance, so the feel is the same at any zoom or window width.
     func moveLoop(_ id: UUID, originalStart: Double, originalEnd: Double, by delta: Double, tolerance: Double = 0) {
         guard !isBusy, !showReview, source != nil else { return }
-        let targets = loops.snapTargets(excluding: id, playhead: position)
+        let targets = loops.snapTargets(excluding: id, playhead: dragPlayhead ?? position)
         let guide = loops.move(id, originalStart: originalStart, originalEnd: originalEnd, by: delta, snappingTo: targets, tolerance: tolerance)
         guard loops.ranges.contains(where: { $0.id == id }) else { return }
         snapGuide = guide
@@ -650,7 +656,7 @@ final class EditorModel: ObservableObject {
         seek(settings.start) // the playhead rides on A while a loop is dragged
     }
 
-    func endLoopDrag() { snapGuide = nil }
+    func endLoopDrag() { snapGuide = nil; dragPlayhead = nil }
 
     func dragLoopHandle(start: Bool, original: MovieLoop, by delta: Double, tolerance: Double = 0) {
         guard !isBusy, !showReview, let source, delta.isFinite,
@@ -658,7 +664,7 @@ final class EditorModel: ObservableObject {
         let minimum = min(0.001, source.duration)
         // One edge moves, so it snaps on its own: the opposite edge is not a candidate to shift to.
         let dragged = (start ? original.start : original.end) + delta
-        let targets = loops.snapTargets(excluding: original.id, playhead: position)
+        let targets = loops.snapTargets(excluding: original.id, playhead: dragPlayhead ?? position)
         let snapped = MovieLoops.snap(start: dragged, end: dragged, targets: targets, tolerance: tolerance)
         let delta = snapped.map { $0.start - (start ? original.start : original.end) } ?? delta
         snapGuide = snapped?.guide

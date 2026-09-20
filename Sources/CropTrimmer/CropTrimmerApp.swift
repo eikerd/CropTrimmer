@@ -33,8 +33,11 @@ struct CropTrimmerApp: App {
                 Button("Reset Range", action: model.resetRange).disabled(model.source == nil || model.isBusy || model.showReview)
                 Divider()
                 ForEach(Array(model.loops.ranges.enumerated()), id: \.element.id) { index, loop in
-                    Button("Select Loop \(index + 1)") { model.selectLoop(loop.id) }
-                        .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                    let number = index + 1
+                    // ⌘1…⌘9 only: KeyEquivalent takes one Character, and Character("10") traps.
+                    // Loops past the ninth are selected from the timeline or the queue.
+                    Button("Select Loop \(number)") { model.selectLoop(loop.id) }
+                        .modifier(OptionalDigitShortcut(number: number))
                         .disabled(model.isBusy || model.showReview)
                 }
                 Button("Add Loop", action: model.addLoop).disabled(model.source == nil || model.isBusy || model.showReview)
@@ -81,5 +84,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard model?.isBusy == true else { return true }
         NSApp.terminate(nil); return false
+    }
+}
+
+/// ⌘1…⌘9 for the first nine loops and nothing for the rest, so an uncapped queue cannot reach
+/// `KeyEquivalent(Character("10"))`, which traps on a multi-character string.
+private struct OptionalDigitShortcut: ViewModifier {
+    let number: Int
+    func body(content: Content) -> some View {
+        if (1...9).contains(number), let digit = String(number).first {
+            content.keyboardShortcut(KeyEquivalent(digit), modifiers: .command)
+        } else {
+            content
+        }
     }
 }
