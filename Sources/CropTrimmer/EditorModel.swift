@@ -239,6 +239,8 @@ final class EditorModel: ObservableObject {
         let requestedGeneration = generation
         let loopID = loop.id
         let sampledTime = loop.start + loop.duration / 2
+        // The samplers take asset time; editor time counts from the first picture.
+        let origin = playbackOrigin
         isSuggestingColor = true
         status = "Analyzing a representative frame…"
         colorSuggestionTask = Task { @MainActor [weak self] in
@@ -246,7 +248,7 @@ final class EditorModel: ObservableObject {
             defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
             do {
                 let suggestion = try await Task.detached(priority: .userInitiated) {
-                    try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime)
+                    try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime + origin)
                 }.value
                 try Task.checkCancellation()
                 guard self.generation == requestedGeneration,
@@ -278,6 +280,8 @@ final class EditorModel: ObservableObject {
             let requestedGeneration = self?.generation ?? UUID()
             let loopID = loop.id
             let sampledTime = loop.start + loop.duration / 2
+            // The samplers take asset time; editor time counts from the first picture.
+            let origin = self?.playbackOrigin ?? 0
             self?.isSuggestingColor = true
             self?.status = "Fitting the matching reference frame…"
             self?.colorSuggestionTask = Task { @MainActor [weak self] in
@@ -285,7 +289,7 @@ final class EditorModel: ObservableObject {
                 defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
                 do {
                     let suggestion = try await Task.detached(priority: .userInitiated) {
-                        try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime, referenceURL: url)
+                        try await AutomaticColorSuggestion.suggest(url: source.url, time: sampledTime + origin, referenceURL: url)
                     }.value
                     try Task.checkCancellation()
                     guard self.generation == requestedGeneration,
@@ -333,6 +337,8 @@ final class EditorModel: ObservableObject {
             let requestedGeneration = self?.generation ?? UUID()
             let loopID = loop.id
             let sampledTime = loop.start + loop.duration / 2
+            // The samplers take asset time; editor time counts from the first picture.
+            let origin = self?.playbackOrigin ?? 0
             self?.isSuggestingColor = true
             self?.status = "Asking the color model for a reference match…"
             self?.colorSuggestionTask = Task { @MainActor [weak self] in
@@ -340,7 +346,7 @@ final class EditorModel: ObservableObject {
                 defer { self.isSuggestingColor = false; self.colorSuggestionTask = nil }
                 do {
                     let result = try await Task.detached(priority: .userInitiated) {
-                        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: sampledTime)
+                        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: sampledTime + origin)
                         let reference = try Data(contentsOf: url, options: .mappedIfSafe)
                         guard reference.count <= 16 * 1024 * 1024 else { throw MediaError.failed("The reference image is too large for a color provider request.") }
                         let request = ColorSuggestionRequest(mode: .unrelatedReference, sourceImage: frame, referenceImage: reference, sourceID: source.id.uuidString)
@@ -418,7 +424,7 @@ final class EditorModel: ObservableObject {
         guard let key else { throw MediaError.invalid("Add your OpenRouter API key in Settings.") }
         // The crop tool picks what the model looks at; no crop means the whole frame.
         let crop = settings.cropEnabled ? settings.crop : nil
-        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time, maximumSide: 512, crop: crop)
+        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time + playbackOrigin, maximumSide: 512, crop: crop)
         try Task.checkCancellation()
         guard self.source?.id == sourceID else { throw CancellationError() }
         let name = try await FilenameVisionProvider().suggest(framePNG: frame, model: namingModel, apiKey: key)
