@@ -184,6 +184,23 @@ final class MediaEngineTests: XCTestCase {
         XCTAssertLessThan(distance(expectedPixels, actualPixels), distance(earlyPixels, actualPixels))
     }
 
+    func testAudioStartingAfterThePictureNeedsNoSeekOffset() async throws {
+        // The reverse case: the picture is the container's earliest stream, so nothing is added.
+        let original = try fixture()
+        let late = directory.appendingPathComponent("late-audio.mp4")
+        try ff(["-i", original.path, "-itsoffset", "0.3", "-f", "lavfi", "-i", "sine=frequency=440:duration=3.5",
+                "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", late.path])
+        let engine = MediaEngine()
+        let source = try await engine.inspect(late)
+        XCTAssertEqual(source.seekOffset, 0, accuracy: 0.001)
+        XCTAssertNil(source.encodingRestriction)
+        var edit = EditSettings(source: source); edit.start = 1; edit.end = 2; edit.method = .accurate
+        let plan = try await engine.plan(source: source, settings: edit)
+        let result = try await engine.export(plan: plan, to: directory.appendingPathComponent("late-audio-out.mp4")) { _, _ in }
+        XCTAssertEqual(result.actualStart, 1, accuracy: 0.001)
+        XCTAssertEqual(result.actualEnd, 2, accuracy: 0.001)
+    }
+
     func testInFlightCancellationRemovesPartialOutput() async throws {
         let url = directory.appendingPathComponent("large.mp4")
         try ff(["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "12", "-c:v", "libx264", "-preset", "ultrafast", url.path])
