@@ -99,6 +99,7 @@ struct QueueLoopCard: View {
                     }
                 })).toggleStyle(.checkbox)
                     .help("Crop selects source pixels and always re-encodes.")
+                rotateButton
                 Spacer(minLength: 0)
                 if edit.cropEnabled {
                     Button(adjusting ? "Done" : "Adjust") {
@@ -111,6 +112,19 @@ struct QueueLoopCard: View {
             if edit.cropEnabled { cropControls }
         }
     }
+
+    /// One button, VLC-style like the playback mode: each click turns the loop a further quarter turn clockwise.
+    private var rotateButton: some View {
+        Button(action: turnClockwise) {
+            Image(systemName: "rotate.right").frame(width: 24, height: 24).contentShape(Rectangle())
+                .foregroundStyle(edit.rotation == 0 ? Color.primary : Color.accentColor)
+        }
+        .buttonStyle(.plain)
+        .help((edit.rotation == 0 ? "Not rotated" : "Rotated \(edit.rotation)°") + " — click for " + rotationName((edit.rotation + 90) % 360))
+        .accessibilityLabel("Loop \(number) rotation").accessibilityValue(rotationName(edit.rotation))
+    }
+
+    private func rotationName(_ degrees: Int) -> String { degrees == 0 ? "upright" : "\(degrees)° clockwise" }
 
     private var cropControls: some View {
         HStack(spacing: 3) {
@@ -139,8 +153,9 @@ struct QueueLoopCard: View {
                 guard let source = model.source else { return "Open a movie first." }
                 var next = edit
                 next.crop[keyPath: key] = value
-                guard next.crop == next.crop.constrained(toWidth: source.width, height: source.height) else {
-                    return "Crop \(title): use even pixel values inside the source picture."
+                let picture = edit.pictureSize(of: source)
+                guard next.crop == next.crop.constrained(toWidth: picture.width, height: picture.height) else {
+                    return "Crop \(title): use even pixel values inside the picture."
                 }
                 return model.updateLoop(id: loop.id, settings: next)
             }.id(cropRevision).frame(minWidth: 24, maxWidth: 35)
@@ -157,7 +172,7 @@ struct QueueLoopCard: View {
                 Picker("Quality", selection: setting(\.quality)) {
                     ForEach(Quality.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }.labelsHidden().help(qualityHelp).accessibilityLabel("Loop \(number) encoding quality")
-                    .disabled(!edit.cropEnabled && edit.color.isIdentity && edit.method == .fast)
+                    .disabled(!edit.cropEnabled && edit.rotation == 0 && edit.color.isIdentity && edit.method == .fast)
             }
             HStack(spacing: 5) {
                 if let size = sizeLabel {
@@ -200,6 +215,7 @@ struct QueueLoopCard: View {
         case .accurate: lines = ["Accurate trim: re-encodes for frame-exact boundaries."]
         }
         if edit.cropEnabled { lines.append("Crop always re-encodes.") }
+        else if edit.rotation != 0 { lines.append("Rotation always re-encodes.") }
         else if !edit.color.isIdentity { lines.append("Color correction always re-encodes.") }
         lines.append("Re-encoding writes H.264 video and the first audio track as AAC; subtitles, chapters and attachments are not kept.")
         if let source = model.source {
@@ -223,7 +239,7 @@ struct QueueLoopCard: View {
         guard let source = model.source else { return "" }
         let filename = OutputPublisher.baseName(sourceURL: source.url, cropped: edit.cropEnabled,
             trimmed: edit.start > 0.001 || edit.end < source.duration - 0.001, loopNumber: number,
-            speed: edit.speed, options: model.filenameOptions)
+            speed: edit.speed, rotation: edit.rotation, options: model.filenameOptions)
             + "." + (model.queuePlans[loop.id]?.fileExtension ?? "mp4")
         return "Saves \(filename) beside the original. An extra number is added if that name exists."
     }
@@ -252,7 +268,8 @@ struct QueueLoopCard: View {
         update {
             $0.cropAspectRatio = aspect
             if aspect != .free { $0.lastLockedCropAspectRatio = aspect }
-            $0.crop = CropGeometry.fitted($0.crop, aspect: aspect, sourceWidth: source.width, sourceHeight: source.height)
+            let picture = $0.pictureSize(of: source)
+            $0.crop = CropGeometry.fitted($0.crop, aspect: aspect, sourceWidth: picture.width, sourceHeight: picture.height)
         }
         clearCropDrafts()
     }
@@ -268,9 +285,16 @@ struct QueueLoopCard: View {
     private func resetCrop() {
         guard let source = model.source else { return }
         update {
-            $0.crop = CropGeometry.fitted(PixelRect(width: source.width, height: source.height), aspect: $0.cropAspectRatio ?? .free,
-                                        sourceWidth: source.width, sourceHeight: source.height)
+            let picture = $0.pictureSize(of: source)
+            $0.crop = CropGeometry.fitted(PixelRect(width: picture.width, height: picture.height), aspect: $0.cropAspectRatio ?? .free,
+                                        sourceWidth: picture.width, sourceHeight: picture.height)
         }
+        clearCropDrafts()
+    }
+
+    private func turnClockwise() {
+        guard let source = model.source else { return }
+        update { $0 = $0.turnedClockwise(source: source) }
         clearCropDrafts()
     }
 

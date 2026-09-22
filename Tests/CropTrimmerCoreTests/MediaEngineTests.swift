@@ -121,6 +121,37 @@ final class MediaEngineTests: XCTestCase {
         }
     }
 
+    func testRotateButtonTurnsThePictureBeforeTheCrop() async throws {
+        let engine = MediaEngine()
+        let source = try await engine.inspect(fixture())
+        for (rotation, filter) in [(90, "transpose=clock"), (180, "hflip,vflip"), (270, "transpose=cclock")] {
+            var edit = EditSettings(source: source)
+            edit.start = 0; edit.end = 1; edit.rotation = rotation
+            let whole = try await engine.plan(source: source, settings: edit)
+            XCTAssertEqual(whole.method, .encode, "A turned picture cannot be a stream copy")
+            XCTAssertTrue(whole.explanation.contains("Rotating"), whole.explanation)
+            let turned = try await engine.export(plan: whole, to: directory.appendingPathComponent("turned-\(rotation).mp4")) { _, _ in }
+            XCTAssertEqual(turned.width, rotation == 180 ? 160 : 120); XCTAssertEqual(turned.height, rotation == 180 ? 120 : 160)
+            try assertFirstFrame(of: turned.url, matches: source.url, filter: filter, pixels: 160 * 120, "rotation \(rotation)")
+
+            // The crop is measured on the turned picture, so it is applied after the turn.
+            edit.cropEnabled = true; edit.crop = PixelRect(x: 10, y: 20, width: 60, height: 80)
+            let cropped = try await engine.export(plan: try await engine.plan(source: source, settings: edit),
+                                                  to: directory.appendingPathComponent("turned-crop-\(rotation).mp4")) { _, _ in }
+            XCTAssertEqual(cropped.width, 60); XCTAssertEqual(cropped.height, 80)
+            try assertFirstFrame(of: cropped.url, matches: source.url, filter: filter + ",crop=60:80:10:20", pixels: 60 * 80, "rotation \(rotation) with crop")
+        }
+    }
+
+    private func assertFirstFrame(of output: URL, matches source: URL, filter: String, pixels: Int, _ message: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        let expected = try ffData(["-i", source.path, "-vf", filter, "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "-"])
+        let actual = try ffData(["-i", output.path, "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "-"])
+        XCTAssertEqual(expected.count, pixels, message, file: file, line: line)
+        XCTAssertEqual(actual.count, expected.count, message, file: file, line: line)
+        let error = zip(expected, actual).reduce(0.0) { $0 + abs(Double($1.0) - Double($1.1)) } / Double(max(1, expected.count))
+        XCTAssertLessThan(error, 4, message, file: file, line: line)
+    }
+
     func testVariableFrameRateRetainsPresentationIntervals() async throws {
         let url = directory.appendingPathComponent("vfr.mp4")
         try ff(["-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "4", "-vf", "select='if(lt(t,2),not(mod(n,2)),1)'", "-fps_mode", "vfr", "-c:v", "libx264", url.path])

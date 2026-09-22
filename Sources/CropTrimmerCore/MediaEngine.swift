@@ -73,13 +73,8 @@ public actor MediaEngine {
 
     public func plan(source: MediaSource, settings: EditSettings) async throws -> ExportPlan {
         try settings.validate(source: source)
-        let hasColor = !settings.color.isIdentity
-        let hasSpeed = abs(settings.speed - 1) > 0.000001
         try unchanged(source)
-        if settings.cropEnabled || settings.method == .accurate || hasColor || hasSpeed {
-            let reason = hasSpeed ? "Playing at \(EditSettings.speedLabel(settings.speed)) speed requires re-encoding." : (hasColor ? "Color correction requires re-encoding." : (settings.cropEnabled ? "Cropping requires re-encoding." : "Accurate trim uses source presentation timing."))
-            return try encodedPlan(source, settings, reason: reason)
-        }
+        if let reason = encodingReason(settings) { return try encodedPlan(source, settings, reason: reason) }
         do {
             let candidate = try await copyPlan(source, settings)
             if settings.method == .fast || (abs(candidate.startShift) <= 0.25 && abs(candidate.endShift) <= 0.25) { return candidate }
@@ -175,6 +170,16 @@ public actor MediaEngine {
         return result
     }
 
+    /// Why these settings cannot be a stream copy, or nil when a copy may be tried.
+    private func encodingReason(_ settings: EditSettings) -> String? {
+        if abs(settings.speed - 1) > 0.000001 { return "Playing at \(EditSettings.speedLabel(settings.speed)) speed requires re-encoding." }
+        if !settings.color.isIdentity { return "Color correction requires re-encoding." }
+        if settings.cropEnabled { return "Cropping requires re-encoding." }
+        if settings.rotation != 0 { return "Rotating requires re-encoding." }
+        if settings.method == .accurate { return "Accurate trim uses source presentation timing." }
+        return nil
+    }
+
     private func encodedPlan(_ source: MediaSource, _ settings: EditSettings, reason: String) throws -> ExportPlan {
         if let restriction = source.encodingRestriction {
             let oddOnly = restriction == "Encoding is not supported for odd full-frame dimensions (choose an even crop)."
@@ -233,6 +238,8 @@ public actor MediaEngine {
         if let lutFile {
             filters.append("lut3d=file='\(filterEscaped(lutFile.path))':interp=trilinear")
         }
+        // FFmpeg has already stood the source upright; the loop's own turn follows, and the crop is measured on its result.
+        if let turn = Self.rotationFilter(plan.settings.rotation) { filters.append(turn) }
         if plan.settings.cropEnabled {
             let c = plan.settings.crop
             filters.append("crop=\(c.width):\(c.height):\(c.x):\(c.y)")
@@ -246,6 +253,16 @@ public actor MediaEngine {
                  "-fps_mode", "passthrough", "-enc_time_base", "-1", "-c:a", "aac", "-b:a", "192k", "-metadata:s:v:0", "rotate=0",
                  "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4", output.path]
         return args
+    }
+
+    /// Turns the picture clockwise by `degrees`; nil when it stays as it is.
+    static func rotationFilter(_ degrees: Int) -> String? {
+        switch degrees {
+        case 90: "transpose=clock"
+        case 180: "hflip,vflip"
+        case 270: "transpose=cclock"
+        default: nil
+        }
     }
 
     /// Factors within atempo's 0.5…2 range whose product is `speed`.

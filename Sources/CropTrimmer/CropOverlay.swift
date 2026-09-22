@@ -1,7 +1,7 @@
 import SwiftUI
 import CropTrimmerCore
 
-/// All gestures use upright source pixels; the parent supplies the fitted image bounds.
+/// All gestures use pixels of the picture as the loop turns it; the parent supplies the fitted image bounds.
 struct CropOverlay: View {
     @Binding var crop: PixelRect
     let aspect: CropAspectRatio

@@ -80,6 +80,9 @@ public struct EditSettings: Codable, Equatable, Sendable {
     /// How fast this loop plays and renders. 1 is the source's own speed; 0.5 is half speed, which
     /// takes twice as long to play. Previewing and exporting use the same number.
     public var speed: Double = 1
+    /// Clockwise turn of the upright picture, in degrees: 0, 90, 180 or 270. The crop is measured on
+    /// the turned picture, so an aspect lock names the shape of the export.
+    public var rotation = 0
     public init() {}
     public init(source: MediaSource) { end = source.duration; crop = PixelRect(width: source.width, height: source.height).constrained(toWidth: source.width, height: source.height) }
     /// The speeds the menus offer. Anything else is refused by `validate`, so a stored or typed
@@ -88,8 +91,30 @@ public struct EditSettings: Codable, Equatable, Sendable {
     public static func speedLabel(_ speed: Double) -> String {
         speed.formatted(.number.precision(.fractionLength(0...3))) + "×"
     }
+    /// The turns the rotate button cycles through, in order.
+    public static let rotations = [0, 90, 180, 270]
 
-    private enum CodingKeys: String, CodingKey { case start, end, cropAspectRatio, lastLockedCropAspectRatio, cropEnabled, crop, method, quality, color, speed }
+    /// The picture this loop crops, and exports whole when it is not cropped: the upright source turned by `rotation`.
+    public func pictureSize(of source: MediaSource) -> (width: Int, height: Int) {
+        rotation % 180 == 0 ? (source.width, source.height) : (source.height, source.width)
+    }
+
+    /// One more clockwise quarter turn, as the rotate button cycles. The crop turns with the picture, so it
+    /// keeps framing the same content and four turns give back the same rectangle; a locked ratio turns too.
+    public func turnedClockwise(source: MediaSource) -> EditSettings {
+        var next = self
+        next.rotation = (rotation + 90) % 360
+        // On a picture `height` tall, a clockwise quarter turn carries the point (x, y) to (height - y, x).
+        let height = pictureSize(of: source).height
+        let size = next.pictureSize(of: source)
+        next.crop = PixelRect(x: height - crop.y - crop.height, y: crop.x, width: crop.height, height: crop.width)
+            .constrained(toWidth: size.width, height: size.height)
+        next.cropAspectRatio = cropAspectRatio?.quarterTurned
+        if let last = lastLockedCropAspectRatio, last.quarterTurned != .free { next.lastLockedCropAspectRatio = last.quarterTurned }
+        return next
+    }
+
+    private enum CodingKeys: String, CodingKey { case start, end, cropAspectRatio, lastLockedCropAspectRatio, cropEnabled, crop, method, quality, color, speed, rotation }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         start = try values.decode(Double.self, forKey: .start)
@@ -102,6 +127,7 @@ public struct EditSettings: Codable, Equatable, Sendable {
         quality = try values.decode(Quality.self, forKey: .quality)
         color = try values.decodeIfPresent(ColorSettings.self, forKey: .color) ?? ColorSettings()
         speed = try values.decodeIfPresent(Double.self, forKey: .speed) ?? 1
+        rotation = try values.decodeIfPresent(Int.self, forKey: .rotation) ?? 0
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -109,7 +135,7 @@ public struct EditSettings: Codable, Equatable, Sendable {
         try values.encode(cropAspectRatio, forKey: .cropAspectRatio); try values.encode(lastLockedCropAspectRatio, forKey: .lastLockedCropAspectRatio)
         try values.encode(cropEnabled, forKey: .cropEnabled); try values.encode(crop, forKey: .crop)
         try values.encode(method, forKey: .method); try values.encode(quality, forKey: .quality); try values.encode(color, forKey: .color)
-        try values.encode(speed, forKey: .speed)
+        try values.encode(speed, forKey: .speed); try values.encode(rotation, forKey: .rotation)
     }
     public var duration: Double { max(0, end - start) }
     /// How long the exported movie runs: the source span stretched or compressed by `speed`.
@@ -119,9 +145,11 @@ public struct EditSettings: Codable, Equatable, Sendable {
         guard Self.speeds.contains(where: { abs($0 - speed) < 0.000001 }) else {
             throw MediaError.invalid("Choose a speed from the menu, between \(Self.speedLabel(Self.speeds[0])) and \(Self.speedLabel(Self.speeds[Self.speeds.count - 1])).")
         }
+        guard Self.rotations.contains(rotation) else { throw MediaError.invalid("Choose a rotation of 0°, 90°, 180° or 270°.") }
         if cropEnabled {
-            guard crop.width >= 2, crop.height >= 2, crop.x >= 0, crop.y >= 0, crop.width <= source.width, crop.height <= source.height, crop.x <= source.width - crop.width, crop.y <= source.height - crop.height,
-                  crop.width % 2 == 0, crop.height % 2 == 0, crop.x % 2 == 0, crop.y % 2 == 0 else { throw MediaError.invalid("Crop coordinates and dimensions must be even and inside the source image.") }
+            let (width, height) = pictureSize(of: source)
+            guard crop.width >= 2, crop.height >= 2, crop.x >= 0, crop.y >= 0, crop.width <= width, crop.height <= height, crop.x <= width - crop.width, crop.y <= height - crop.height,
+                  crop.width % 2 == 0, crop.height % 2 == 0, crop.x % 2 == 0, crop.y % 2 == 0 else { throw MediaError.invalid("Crop coordinates and dimensions must be even and inside the picture.") }
         }
         try color.validate()
     }
@@ -135,8 +163,8 @@ public struct ExportPlan: Sendable {
         self.source = source; self.settings = settings; self.method = method; self.plannedStart = plannedStart; self.plannedEnd = plannedEnd; self.copyCutEnd = copyCutEnd; self.fileExtension = fileExtension; self.explanation = explanation
         self.colorLUT = settings.color.isIdentity ? nil : try ColorLUT.compile(settings: settings.color)
     }
-    public var width: Int { settings.cropEnabled ? settings.crop.width : source.width }
-    public var height: Int { settings.cropEnabled ? settings.crop.height : source.height }
+    public var width: Int { settings.cropEnabled ? settings.crop.width : settings.pictureSize(of: source).width }
+    public var height: Int { settings.cropEnabled ? settings.crop.height : settings.pictureSize(of: source).height }
     /// The span taken from the source. `outputDuration` is what the exported file runs for, which
     /// differs whenever the loop carries a speed.
     public var duration: Double { plannedEnd - plannedStart }

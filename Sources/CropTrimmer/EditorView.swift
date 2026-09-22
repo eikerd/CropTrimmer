@@ -68,18 +68,20 @@ struct EditorView: View {
             GeometryReader { proxy in
                 let cropped = model.settings.cropEnabled && !model.cropAdjusting
                 let crop = model.settings.crop
-                let width = CGFloat(cropped ? crop.width : source.width)
-                let height = CGFloat(cropped ? crop.height : source.height)
+                // The loop's turned picture; the crop and its overlay are measured on it.
+                let picture = model.settings.pictureSize(of: source)
+                let width = CGFloat(cropped ? crop.width : picture.width)
+                let height = CGFloat(cropped ? crop.height : picture.height)
                 let scale = min(proxy.size.width / width, proxy.size.height / height)
                 ZStack {
                     Color.black
                     ZStack(alignment: .topLeading) {
-                        PlayerSurface(player: model.player)
-                            .frame(width: CGFloat(source.width) * scale, height: CGFloat(source.height) * scale)
+                        PlayerSurface(player: model.player, rotation: model.settings.rotation)
+                            .frame(width: CGFloat(picture.width) * scale, height: CGFloat(picture.height) * scale)
                             .offset(x: cropped ? -CGFloat(crop.x) * scale : 0, y: cropped ? -CGFloat(crop.y) * scale : 0)
                     }.frame(width: width * scale, height: height * scale, alignment: .topLeading).clipped()
                     if model.cropAdjusting {
-                        CropOverlay(crop: $model.settings.crop, aspect: model.settings.cropAspectRatio ?? .free, sourceWidth: source.width, sourceHeight: source.height)
+                        CropOverlay(crop: $model.settings.crop, aspect: model.settings.cropAspectRatio ?? .free, sourceWidth: picture.width, sourceHeight: picture.height)
                             .frame(width: width * scale, height: height * scale).disabled(model.isBusy)
                     }
                 }
@@ -689,16 +691,31 @@ private struct LoopHeader: View {
 
 struct PlayerSurface: NSViewRepresentable {
     let player: AVPlayer
-    func makeNSView(context: Context) -> PlayerLayerView { let view = PlayerLayerView(); view.videoLayer.player = player; return view }
-    func updateNSView(_ view: PlayerLayerView, context: Context) { view.videoLayer.player = player }
+    /// Clockwise degrees, a multiple of 90. The view is given the turned picture's shape.
+    var rotation = 0
+    func makeNSView(context: Context) -> PlayerLayerView { let view = PlayerLayerView(); view.videoLayer.player = player; view.rotation = rotation; return view }
+    func updateNSView(_ view: PlayerLayerView, context: Context) { view.videoLayer.player = player; view.rotation = rotation }
 }
 final class PlayerLayerView: NSView {
     let videoLayer = AVPlayerLayer()
+    var rotation = 0 { didSet { if rotation != oldValue { needsLayout = true } } }
     override init(frame frameRect: NSRect) { super.init(frame: frameRect); wantsLayer = true; videoLayer.videoGravity = .resizeAspect; layer?.addSublayer(videoLayer) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var acceptsFirstResponder: Bool { true }
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
-    override func layout() { super.layout(); videoLayer.frame = bounds }
+    /// The layer keeps the upright picture's shape and turns about its centre to fill the view. The turn is
+    /// set instantly: the SwiftUI frame around it changes shape in one step, so an animated turn would lag it.
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let sideways = rotation % 180 != 0
+        videoLayer.setAffineTransform(.identity)
+        videoLayer.bounds = CGRect(origin: .zero, size: sideways ? CGSize(width: bounds.height, height: bounds.width) : bounds.size)
+        videoLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        // AppKit's layer space has y pointing up, so a clockwise turn is a negative angle.
+        videoLayer.setAffineTransform(CGAffineTransform(rotationAngle: -CGFloat(rotation) * .pi / 180))
+        CATransaction.commit()
+    }
 }
 
 func queueSeconds(_ seconds: Double) -> String {
