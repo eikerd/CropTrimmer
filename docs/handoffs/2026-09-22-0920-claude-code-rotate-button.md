@@ -58,4 +58,4 @@ File `4otxM7dLAxgK6KQJ5YIJzx`, loop card `4:175`, crop row `5:12`: added `icon/r
 
 ## Proposed rule changes
 
-None.
+- **`AGENTS.md` line 5, "Crop uses upright source pixels and requires encoding."** This PR measures the crop on the picture *as the loop turns it*. Codex flagged that as breaking the line (PR #14, review round 2), and it was declined on the thread. The line guards against measuring a crop in the encoded, sideways-stored pixels of a file with rotation metadata, and that still holds. Proposed wording: "Crop uses upright source pixels, turned by the loop's own rotation (the picture the user sees), and requires encoding." Only the owner can make that edit.
