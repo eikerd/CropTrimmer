@@ -31,14 +31,14 @@ enum AutomaticColorSuggestion {
     /// Encodes the upright representative frame for a reference-conditioned
     /// provider. The image is transient request data and is never added to the
     /// media library.
-    static func framePNGData(url: URL, time: Double, maximumSide: CGFloat? = nil, crop: PixelRect? = nil) async throws -> Data {
+    static func framePNGData(url: URL, time: Double, maximumSide: CGFloat? = nil, crop: PixelRect? = nil, rotation: Int = 0) async throws -> Data {
         guard url.isFileURL, time.isFinite, time >= 0 else {
             throw MediaError.invalid("Choose a valid movie frame for color correction.")
         }
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
-        // A crop is expressed in source pixels, so the frame has to arrive at full
-        // size; the downscale to maximumSide happens after cropping instead.
+        // A crop is expressed in pixels of the turned picture, so the frame has to arrive
+        // at full size; the downscale to maximumSide happens after cropping instead.
         if let maximumSide, crop == nil {
             guard maximumSide.isFinite, maximumSide > 0, maximumSide <= 4096 else {
                 throw MediaError.invalid("Choose a valid frame size.")
@@ -48,7 +48,8 @@ enum AutomaticColorSuggestion {
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
-        let fullFrame = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 60_000)).image
+        let upright = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 60_000)).image
+        let fullFrame = try turned(upright, clockwise: rotation)
         let frame = try crop.map { try cropped(fullFrame, to: $0, maximumSide: maximumSide) } ?? fullFrame
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil) else {
@@ -61,7 +62,24 @@ enum AutomaticColorSuggestion {
         return result
     }
 
-    /// Crops to a region in source pixels, then downscales so the long side is at
+    /// The frame as the loop turns it, clockwise in quarter turns.
+    private static func turned(_ image: CGImage, clockwise degrees: Int) throws -> CGImage {
+        let orientation: CGImagePropertyOrientation
+        switch degrees {
+        case 0: return image
+        case 90: orientation = .right
+        case 180: orientation = .down
+        case 270: orientation = .left
+        default: throw MediaError.invalid("Choose a rotation of 0°, 90°, 180° or 270°.")
+        }
+        let turned = CIImage(cgImage: image).oriented(orientation)
+        guard let result = CIContext().createCGImage(turned, from: turned.extent) else {
+            throw MediaError.failed("The frame could not be turned.")
+        }
+        return result
+    }
+
+    /// Crops to a region of the turned picture, then downscales so the long side is at
     /// most `maximumSide`. Cropping first keeps the requested region's detail.
     private static func cropped(_ image: CGImage, to crop: PixelRect, maximumSide: CGFloat?) throws -> CGImage {
         let region = crop.constrained(toWidth: image.width, height: image.height, even: false)

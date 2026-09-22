@@ -75,7 +75,7 @@ private struct FilenameSettingsView: View {
     private var sample: String {
         OutputPublisher.baseName(
             sourceURL: URL(fileURLWithPath: "/Movies/Holiday.mp4"),
-            cropped: true, trimmed: true, loopNumber: 2, speed: 0.5,
+            cropped: true, trimmed: true, loopNumber: 2, speed: 0.5, rotation: 90,
             options: model.filenameOptions
         ) + ".mp4"
     }
@@ -86,6 +86,7 @@ private struct FilenameSettingsView: View {
                 Toggle("Loop number", isOn: $model.filenameOptions.includeLoopNumber)
                 Toggle("Trim", isOn: $model.filenameOptions.includeTrim)
                 Toggle("Crop", isOn: $model.filenameOptions.includeCrop)
+                Toggle("Rotation", isOn: $model.filenameOptions.includeRotation)
                 Toggle("Speed", isOn: $model.filenameOptions.includeSpeed)
                 VisionModelPicker(title: "Naming model", selection: $model.filenameModel)
                     .help("The OpenRouter model that describes a frame when you ask for a suggested name.")

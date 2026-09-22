@@ -94,6 +94,25 @@ final class FilenameOptionsTests: XCTestCase {
         let restored = FilenameOptions.load(from: defaults)
         XCTAssertFalse(restored.includeLoopNumber); XCTAssertTrue(restored.includeSpeed); XCTAssertFalse(restored.includeTrim)
     }
+
+    func testRotationJoinsTheNameWhenTheLoopIsTurned() {
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: true, trimmed: true, loopNumber: 1, rotation: 90), "Clip - loop 01 - trim crop - rot90")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: false, rotation: 270), "Clip - rot270")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 1, rotation: 0), "Clip - loop 01 - trim")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 1, speed: 0.5, rotation: 180, options: FilenameOptions(includeSpeed: true)),
+                       "Clip - loop 01 - trim - rot180 - 0.5x")
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: source, cropped: false, trimmed: true, loopNumber: 1, rotation: 90, options: FilenameOptions(includeRotation: false)),
+                       "Clip - loop 01 - trim")
+    }
+
+    func testOptionsStoredBeforeRotationExistedKeepTheirChoices() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "CropTrimmer.filename.\(UUID().uuidString)"))
+        defaults.set(Data(#"{"includeLoopNumber":false,"includeCrop":true,"includeTrim":false,"includeSpeed":true}"#.utf8), forKey: "CropTrimmer.filenameOptions")
+        let restored = FilenameOptions.load(from: defaults)
+        XCTAssertFalse(restored.includeLoopNumber, "Adding the rotation switch must not reset the owner's other choices")
+        XCTAssertTrue(restored.includeSpeed)
+        XCTAssertTrue(restored.includeRotation)
+    }
 }
 
 final class OutputPublisherOwnershipTests: XCTestCase {

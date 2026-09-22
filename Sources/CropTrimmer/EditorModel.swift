@@ -422,9 +422,9 @@ final class EditorModel: ObservableObject {
         let key = try OpenRouterKeyStore.read()
             ?? Self.colorProviderAPIKey(environment: ProcessInfo.processInfo.environment, isOpenRouter: true)
         guard let key else { throw MediaError.invalid("Add your OpenRouter API key in Settings.") }
-        // The crop tool picks what the model looks at; no crop means the whole frame.
+        // The crop tool picks what the model looks at; no crop means the whole frame, turned as the loop is.
         let crop = settings.cropEnabled ? settings.crop : nil
-        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time + playbackOrigin, maximumSide: 512, crop: crop)
+        let frame = try await AutomaticColorSuggestion.framePNGData(url: source.url, time: time + playbackOrigin, maximumSide: 512, crop: crop, rotation: settings.rotation)
         try Task.checkCancellation()
         guard self.source?.id == sourceID else { throw CancellationError() }
         let name = try await FilenameVisionProvider().suggest(framePNG: frame, model: namingModel, apiKey: key)
@@ -798,7 +798,8 @@ final class EditorModel: ObservableObject {
             var edit = settings
             edit.cropAspectRatio = aspect
             if aspect != .free { edit.lastLockedCropAspectRatio = aspect }
-            edit.crop = CropGeometry.fitted(edit.crop, aspect: aspect, sourceWidth: source.width, sourceHeight: source.height)
+            let picture = edit.pictureSize(of: source)
+            edit.crop = CropGeometry.fitted(edit.crop, aspect: aspect, sourceWidth: picture.width, sourceHeight: picture.height)
             settings = edit
         }
     }
@@ -813,7 +814,8 @@ final class EditorModel: ObservableObject {
     func resetCrop() {
         guard !isBusy, let source else { return }
         timeInputErrors = [:]; timeInputRevision = UUID()
-        settings.crop = CropGeometry.fitted(PixelRect(width: source.width, height: source.height), aspect: settings.cropAspectRatio ?? .free, sourceWidth: source.width, sourceHeight: source.height)
+        let picture = settings.pictureSize(of: source)
+        settings.crop = CropGeometry.fitted(PixelRect(width: picture.width, height: picture.height), aspect: settings.cropAspectRatio ?? .free, sourceWidth: picture.width, sourceHeight: picture.height)
     }
 
     private func updateBoundaryObserver() {
@@ -983,7 +985,7 @@ final class EditorModel: ObservableObject {
                     try Task.checkCancellation()
                     guard try SourceIdentity(url: source.url) == source.identity else { throw MediaError.sourceChanged }
                     let trimmed = plan.settings.start > 0.001 || plan.settings.end < source.duration - 0.001
-                    let published = try OutputPublisher.publish(temporaryURL: temp, sourceURL: source.url, cropped: plan.settings.cropEnabled, trimmed: trimmed, directory: directory, extension: plan.fileExtension, loopNumber: number, speed: plan.settings.speed, options: filenameOptions)
+                    let published = try OutputPublisher.publish(temporaryURL: temp, sourceURL: source.url, cropped: plan.settings.cropEnabled, trimmed: trimmed, directory: directory, extension: plan.fileExtension, loopNumber: number, speed: plan.settings.speed, rotation: plan.settings.rotation, options: filenameOptions)
                     result.url = published; results.append(result); completed += 1
                 }
                 progress = 1; status = "Saved \(completed) loop\(completed == 1 ? "" : "s") to \(directory.lastPathComponent)"

@@ -16,6 +16,18 @@ public enum CropAspectRatio: String, CaseIterable, Codable, Sendable {
         case .scope: 2.39
         }
     }
+
+    /// The same frame after a quarter turn of the picture beneath it. Freeform, Original and 1:1 read the
+    /// same either way up and 16:9 swaps with 9:16; the menu has no upright 4:3, 1.85:1 or 2.39:1, so
+    /// those unlock rather than squeeze the turned crop.
+    public var quarterTurned: CropAspectRatio {
+        switch self {
+        case .free, .original, .square: self
+        case .widescreen: .portrait
+        case .portrait: .widescreen
+        case .classic, .cinema, .scope: .free
+        }
+    }
 }
 
 /// Locked sizes are rounded to the nearest available even source pixel.
