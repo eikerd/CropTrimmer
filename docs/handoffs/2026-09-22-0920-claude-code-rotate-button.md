@@ -29,7 +29,8 @@ The owner asked for a rotate control right beside the crop control, doing 90°, 
 
 ## Where it is
 
-- Commits: `00541aa` feat: rotate button that turns a loop a quarter turn per click; review-round fixes (listed in the PR); this note and `reports/pr-14.html`.
+- Commits: `00541aa` feat: rotate button that turns a loop a quarter turn per click · `26795cf` handoff note; the crop overlay comment now says it measures the turned picture · `d3b84c2` proposed AGENTS.md crop wording · then this note's final state and `reports/pr-14.html`.
+- Reviews: three rounds. Neither bot raised an actionable finding in rounds 1 or 3; CodeRabbit had none in any round. In round 2, Codex argued the crop should stay in untouched source coordinates, citing AGENTS.md; I declined it on the thread (see Proposed rule changes). A swift-reviewer pass found no real defects. Copilot hit its quota and reviewed nothing; Greptile never attached. Scorecard: `reports/pr-14.html`.
 - Tests: `swift test`, 114 tests, 0 failures, 12 new. `RotationTests` (9), `MediaEngineTests.testRotateButtonTurnsThePictureBeforeTheCrop` (90/180/270, whole and cropped, pixel-checked against FFmpeg's own filters), and two `FilenameOptionsTests`.
 
 ## What is deployed
