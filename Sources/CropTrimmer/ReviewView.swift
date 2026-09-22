@@ -30,8 +30,14 @@ struct ReviewView: View {
                         Text(result.url.lastPathComponent).font(.headline).textSelection(.enabled)
                         Text("\(timeLabel(result.duration)) · \(result.width) × \(result.height) · \(byteLabel(result.bytes))").monospacedDigit()
                         Text(result.method == .copy ? "Fast trim · source quality unchanged" : "Re-encoded · \(result.quality?.rawValue ?? "Balanced")")
-                        Text("Requested: \(timeLabel(result.settings.start)) – \(timeLabel(result.settings.end))").monospacedDigit()
-                        Text(String(format: "Actual boundary shifts: %+.3f s / %+.3f s", result.actualStart - result.settings.start, result.actualEnd - result.settings.end)).monospacedDigit()
+                        // A joined clip has as many requested ranges as it has loops, so one pair of
+                        // boundaries would describe only its first loop. It says what it is instead.
+                        if result.segments > 1 {
+                            Text("Joined from \(result.segments) loops, in timeline order").monospacedDigit()
+                        } else {
+                            Text("Requested: \(timeLabel(result.settings.start)) – \(timeLabel(result.settings.end))").monospacedDigit()
+                            Text(String(format: "Actual boundary shifts: %+.3f s / %+.3f s", result.actualStart - result.settings.start, result.actualEnd - result.settings.end)).monospacedDigit()
+                        }
                         if !result.note.isEmpty { Text(result.note).foregroundStyle(.secondary) }
                     }.font(.system(size: 12))
                     Spacer()

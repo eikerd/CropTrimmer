@@ -1,0 +1,119 @@
+import XCTest
+@testable import CropTrimmerCore
+
+/// Export All chains every loop into one clip. These cover the two decisions that clip makes on its
+/// own — the frame it renders into, and the filtergraph that gets segments into that frame — plus
+/// the name the single file ends up with.
+final class JoinedExportTests: XCTestCase {
+    private var url: URL!
+
+    override func setUpWithError() throws {
+        url = FileManager.default.temporaryDirectory.appendingPathComponent("Beach Clip.mov")
+        try Data("fixture".utf8).write(to: url)
+    }
+    override func tearDownWithError() throws { if let url { try? FileManager.default.removeItem(at: url) } }
+
+    // MARK: the frame
+
+    func testFrameOfMatchingLoopsIsThatSameFrame() {
+        let sizes = [(width: 1280, height: 720), (width: 1280, height: 720)]
+        XCTAssertEqual(MediaEngine.joinFrame(sizes, mode: .fitAll).map(Pair.init), Pair(1280, 720))
+        XCTAssertEqual(MediaEngine.joinFrame(sizes, mode: .matchFirst).map(Pair.init), Pair(1280, 720))
+    }
+
+    func testFitAllHoldsEveryLoopAtFullSize() {
+        let sizes = [(width: 1280, height: 720), (width: 1920, height: 800)]
+        XCTAssertEqual(MediaEngine.joinFrame(sizes, mode: .fitAll).map(Pair.init), Pair(1920, 800))
+    }
+
+    /// A turned loop beside an upright one is the case the owner is asked about: fitting both whole
+    /// needs a square, while matching the first keeps that loop's own frame and shrinks the other.
+    func testPortraitBesideLandscape() {
+        let sizes = [(width: 1920, height: 1080), (width: 1080, height: 1920)]
+        XCTAssertEqual(MediaEngine.joinFrame(sizes, mode: .fitAll).map(Pair.init), Pair(1920, 1920))
+        XCTAssertEqual(MediaEngine.joinFrame(sizes, mode: .matchFirst).map(Pair.init), Pair(1920, 1080))
+    }
+
+    /// H.264's 4:2:0 chroma cannot encode an odd frame, and an uncropped loop of an odd-sized
+    /// source carries odd dimensions straight through.
+    func testOddSizesRoundUpToEven() {
+        XCTAssertEqual(MediaEngine.joinFrame([(width: 641, height: 481)], mode: .fitAll).map(Pair.init), Pair(642, 482))
+        XCTAssertEqual(MediaEngine.joinFrame([(width: 641, height: 481)], mode: .matchFirst).map(Pair.init), Pair(642, 482))
+    }
+
+    func testNoLoopsHasNoFrame() {
+        XCTAssertNil(MediaEngine.joinFrame([], mode: .fitAll))
+    }
+
+    // MARK: the filtergraph
+
+    func testEverySegmentIsConformedAndConcatenated() {
+        let graph = MediaEngine.joinFilterGraph(count: 3, width: 1920, height: 1080, fps: 30, audio: true)
+        for index in 0..<3 {
+            XCTAssertTrue(graph.contains("[\(index):v:0]scale=1920:1080:force_original_aspect_ratio=decrease"), graph)
+            XCTAssertTrue(graph.contains("pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black"), graph)
+            XCTAssertTrue(graph.contains("[\(index):a:0]aformat="), graph)
+        }
+        XCTAssertTrue(graph.contains("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[vout][aout]"), graph)
+    }
+
+    /// A silent source produces silent segments; asking concat for an audio stream that no segment
+    /// has fails the whole join, so the audio half of the graph has to disappear with it.
+    func testSilentSourceJoinsWithoutAudio() {
+        let graph = MediaEngine.joinFilterGraph(count: 2, width: 640, height: 480, fps: 25, audio: false)
+        XCTAssertFalse(graph.contains("aformat"))
+        XCTAssertTrue(graph.contains("[v0][v1]concat=n=2:v=1:a=0[vout]"), graph)
+        XCTAssertFalse(graph.contains("[aout]"))
+    }
+
+    /// One rate for the clip: a loop carrying a speed leaves its segment with the source's frame
+    /// count over a shorter span, and concat cannot interleave two timebases.
+    func testOneFrameRateAcrossEverySegment() {
+        let graph = MediaEngine.joinFilterGraph(count: 2, width: 640, height: 480, fps: 29.97, audio: false)
+        XCTAssertEqual(graph.components(separatedBy: "fps=29.970000000").count - 1, 2, graph)
+    }
+
+    // MARK: the name
+
+    func testJoinedClipIsNamedForAllItsLoops() {
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: url, cropped: true, trimmed: true, joined: true),
+                       "Beach Clip - all loops - trim crop")
+    }
+
+    func testJoinedNameFollowsTheLoopNumberPreference() {
+        var options = FilenameOptions.standard
+        options.includeLoopNumber = false
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: url, cropped: false, trimmed: true, options: options, joined: true),
+                       "Beach Clip - trim")
+    }
+
+    func testAnOrdinaryExportKeepsItsLoopNumber() {
+        XCTAssertEqual(OutputPublisher.baseName(sourceURL: url, cropped: false, trimmed: true, loopNumber: 2),
+                       "Beach Clip - loop 02 - trim")
+    }
+
+    // MARK: the question the owner is asked
+
+    func testMatchingLoopsAreNotAsked() {
+        let sizes = [(width: 1280, height: 720), (width: 1280, height: 720)]
+        XCTAssertNil(JoinFramePrompt(sizes: sizes, fit: (1280, 720), matched: (1280, 720)),
+                     "Nothing to decide, so the export is not stopped to decide it")
+    }
+
+    func testTheQuestionNamesEveryLoopAndWhatEachAnswerProduces() throws {
+        let sizes = [(width: 1920, height: 1080), (width: 1080, height: 1920)]
+        let prompt = try XCTUnwrap(JoinFramePrompt(sizes: sizes, fit: (1920, 1920), matched: (1920, 1080)))
+        XCTAssertEqual(prompt.message, "These loops are not all the same size.")
+        XCTAssertTrue(prompt.detail.hasPrefix("Loop 1 is 1920 × 1080, Loop 2 is 1080 × 1920."), prompt.detail)
+        XCTAssertTrue(prompt.detail.contains("centred on black"), prompt.detail)
+        XCTAssertEqual(prompt.fitTitle, "Fit Every Loop · 1920 × 1920")
+        XCTAssertEqual(prompt.matchTitle, "Match Loop 1 · 1920 × 1080")
+    }
+
+    /// Comparing tuples through XCTAssertEqual needs a nominal type.
+    private struct Pair: Equatable {
+        let width: Int, height: Int
+        init(_ size: (width: Int, height: Int)) { width = size.width; height = size.height }
+        init(_ width: Int, _ height: Int) { self.width = width; self.height = height }
+    }
+}

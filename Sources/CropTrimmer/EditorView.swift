@@ -232,9 +232,15 @@ struct EditorView: View {
             VStack(spacing: 8) {
                 if model.isBusy { Button("Cancel", action: model.cancel).frame(maxWidth: .infinity) }
                 else {
-                    Button("Export Queue (\(model.loops.ranges.count))", action: model.exportQueue)
-                        .frame(maxWidth: .infinity).buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(model.source == nil || model.loops.ranges.isEmpty || model.cropAdjusting || model.hasInputErrors)
+                    let blocked = model.source == nil || model.loops.ranges.isEmpty || model.cropAdjusting || model.hasInputErrors
+                    HStack(spacing: 8) {
+                        Button("Export Each (\(model.loops.ranges.count))", action: model.exportEach)
+                            .frame(maxWidth: .infinity).controlSize(.large).disabled(blocked)
+                            .help("One movie per loop, numbered in timeline order")
+                        Button("Export All (\(model.loops.ranges.count))", action: model.exportAll)
+                            .frame(maxWidth: .infinity).buttonStyle(.borderedProminent).controlSize(.large).disabled(blocked)
+                            .help("Every loop chained end to end, in timeline order, as one movie")
+                    }
                 }
             }.padding(16)
         }.background(Color.white.opacity(0.035))

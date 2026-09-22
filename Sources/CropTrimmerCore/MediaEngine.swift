@@ -170,6 +170,99 @@ public actor MediaEngine {
         return result
     }
 
+    /// Joins finished loop movies into one clip, in the order given. Every segment is scaled to fit
+    /// inside the chosen frame without distortion and centred on black, so loops that were cropped
+    /// or turned differently still share one timeline. This always re-encodes: the concat filter
+    /// needs one set of stream parameters across every segment, and a stream copy cannot make them.
+    public func join(_ request: JoinRequest, to temporaryURL: URL, progress: @escaping @Sendable (Double, String) -> Void) async throws -> ExportResult {
+        guard request.segments.count >= 2 else { throw MediaError.invalid("Joining needs at least two loops.") }
+        guard request.width >= 2, request.height >= 2, request.width % 2 == 0, request.height % 2 == 0 else {
+            throw MediaError.invalid("The joined frame must be even and at least two pixels on each side.")
+        }
+        let destination = temporaryURL.standardizedFileURL
+        guard temporaryURL.isFileURL, !FileManager.default.fileExists(atPath: temporaryURL.path),
+              !request.segments.contains(where: { $0.standardizedFileURL == destination }),
+              destination != request.sourceURL.standardizedFileURL else {
+            throw MediaError.invalid("The joined output must be a new file, separate from its loops and the original.")
+        }
+        var success = false
+        defer { if !success { try? FileManager.default.removeItem(at: temporaryURL) } }
+        // One rate for the whole clip. Loops carrying a speed leave their segment with the source's
+        // frame count over a shorter span; conforming each segment here keeps the join from
+        // interleaving two timebases, and changes no loop's apparent speed.
+        let rate = request.fps > 0 ? request.fps : 30
+        var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n"]
+        for segment in request.segments { args += ["-i", segment.path] }
+        args += ["-filter_complex", Self.joinFilterGraph(count: request.segments.count, width: request.width,
+                                                         height: request.height, fps: rate, audio: request.audio),
+                 "-map", "[vout]"]
+        if request.audio { args += ["-map", "[aout]"] }
+        args += ["-map_metadata", "-1", "-map_chapters", "-1", "-c:v", "libx264", "-preset", "medium",
+                 "-crf", String(request.quality.crf), "-pix_fmt", "yuv420p", "-metadata:s:v:0", "rotate=0"]
+        if request.audio { args += ["-c:a", "aac", "-b:a", "192k"] }
+        args += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4", temporaryURL.path]
+        _ = try await run("ffmpeg", arguments: args, duration: request.expectedDuration, progress: progress)
+        progress(0.94, "Validating the joined movie")
+        let output = try await inspect(temporaryURL)
+        guard output.identity.size > 0, output.width == request.width, output.height == request.height,
+              output.videoCodec == "h264", output.rotation == 0,
+              output.audioCount == (request.audio ? 1 : 0) else {
+            throw MediaError.failed("The joined movie's streams or dimensions do not match the frame that was chosen.")
+        }
+        // Each join lands on the output frame grid, so allow one frame per segment for the rounding.
+        guard abs(output.duration - request.expectedDuration) <= max(0.25, Double(request.segments.count) / rate) else {
+            throw MediaError.failed("The joined movie's length differs from the loops it was made of. Nothing was saved.")
+        }
+        let starts = output.duration <= 20 ? [0.0] : [0.0, max(0, output.duration - 3)]
+        for start in starts {
+            try Task.checkCancellation()
+            _ = try await run("ffmpeg", arguments: ["-hide_banner", "-loglevel", "error", "-xerror", "-nostdin", "-ss", decimal(start), "-i", output.url.path,
+                "-t", decimal(output.duration <= 20 ? output.duration : 3), "-map", "0:V:0", "-map", "0:a?", "-f", "null", "-"])
+        }
+        success = true
+        progress(1, "Validated")
+        return ExportResult(url: output.url, sourceURL: request.sourceURL, duration: output.duration,
+                            width: output.width, height: output.height, bytes: output.identity.size,
+                            method: .encode, quality: request.quality, settings: request.settings,
+                            actualStart: 0, actualEnd: output.duration,
+                            note: "\(request.segments.count) loops joined end to end, in timeline order, and re-encoded once into a \(request.width) x \(request.height) frame. Loops smaller than that frame are centred on black; none is cropped or stretched.",
+                            segments: request.segments.count)
+    }
+
+    /// The filtergraph a join runs: every segment conformed to one frame, one pixel format, one
+    /// frame rate and one audio format, then concatenated. The conforming is what makes the concat
+    /// legal — the filter refuses segments whose parameters differ, and will not scale them itself.
+    /// Scaling keeps each segment's aspect ratio and pads the remainder with black, so a loop never
+    /// loses picture to the join.
+    static func joinFilterGraph(count: Int, width: Int, height: Int, fps: Double, audio: Bool) -> String {
+        var chains: [String] = []
+        var inputs = ""
+        for index in 0..<count {
+            chains.append("[\(index):v:0]scale=\(width):\(height):force_original_aspect_ratio=decrease:flags=lanczos," +
+                          "pad=\(width):\(height):(ow-iw)/2:(oh-ih)/2:color=black,setsar=1," +
+                          "fps=\(decimal(fps)),format=yuv420p[v\(index)]")
+            inputs += "[v\(index)]"
+            if audio {
+                chains.append("[\(index):a:0]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,asetpts=N/SR/TB[a\(index)]")
+                inputs += "[a\(index)]"
+            }
+        }
+        chains.append(inputs + "concat=n=\(count):v=1:a=\(audio ? 1 : 0)[vout]" + (audio ? "[aout]" : ""))
+        return chains.joined(separator: ";")
+    }
+
+    /// The frame a joined clip renders into. Both modes round up to even sizes, which H.264's
+    /// 4:2:0 chroma requires, and neither ever crops: a loop smaller than the frame is padded.
+    public static func joinFrame(_ sizes: [(width: Int, height: Int)], mode: JoinFrame) -> (width: Int, height: Int)? {
+        guard let first = sizes.first else { return nil }
+        let chosen: (width: Int, height: Int)
+        switch mode {
+        case .fitAll: chosen = (sizes.map(\.width).max() ?? first.width, sizes.map(\.height).max() ?? first.height)
+        case .matchFirst: chosen = first
+        }
+        return (max(2, chosen.width + chosen.width % 2), max(2, chosen.height + chosen.height % 2))
+    }
+
     /// Why these settings cannot be a stream copy, or nil when a copy may be tried.
     private func encodingReason(_ settings: EditSettings) -> String? {
         if abs(settings.speed - 1) > 0.000001 { return "Playing at \(EditSettings.speedLabel(settings.speed)) speed requires re-encoding." }
