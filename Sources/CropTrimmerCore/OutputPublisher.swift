@@ -35,7 +35,7 @@ public enum OutputPublisher {
         let candidates = spellings(of: url)
         lock.lock(); owned.subtract(candidates); lock.unlock()
     }
-    public static func publish(temporaryURL: URL, sourceURL: URL, cropped: Bool, trimmed: Bool = true, directory: URL, extension fileExtension: String, loopNumber: Int? = nil, speed: Double = 1, rotation: Int = 0, options: FilenameOptions = .standard) throws -> URL {
+    public static func publish(temporaryURL: URL, sourceURL: URL, cropped: Bool, trimmed: Bool = true, directory: URL, extension fileExtension: String, loopNumber: Int? = nil, speed: Double = 1, rotation: Int = 0, options: FilenameOptions = .standard, joined: Bool = false) throws -> URL {
         let temporary = temporaryURL.standardizedFileURL
         // Compared as paths, not URLs: `deletingLastPathComponent()` leaves a trailing slash, so
         // the same folder spelled two ways is two different URLs but one path.
@@ -46,7 +46,7 @@ public enum OutputPublisher {
         }
         let values = try temporary.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? 0) > 0 else { throw MediaError.failed("Export produced no regular movie file.") }
-        let base = baseName(sourceURL: sourceURL, cropped: cropped, trimmed: trimmed, loopNumber: loopNumber, speed: speed, rotation: rotation, options: options)
+        let base = baseName(sourceURL: sourceURL, cropped: cropped, trimmed: trimmed, loopNumber: loopNumber, speed: speed, rotation: rotation, options: options, joined: joined)
         for index in 1...10000 {
             let destination = directory.appendingPathComponent(base + (index == 1 ? "" : " \(index)")).appendingPathExtension(safeExtension(fileExtension))
             let result = temporary.path.withCString { src in destination.path.withCString { dst in renamex_np(src, dst, UInt32(RENAME_EXCL)) } }
@@ -63,10 +63,14 @@ public enum OutputPublisher {
     /// The name an export takes, before the uniquing suffix. Each operation contributes its own
     /// part only if the owner asked for it; with everything switched off the name is the source's,
     /// and uniquing keeps it from ever replacing the original.
-    public static func baseName(sourceURL: URL, cropped: Bool, trimmed: Bool, loopNumber: Int? = nil, speed: Double = 1, rotation: Int = 0, options: FilenameOptions = .standard) -> String {
+    /// `joined` names the one clip every loop was chained into, which has no single loop number
+    /// to carry; it follows the same switch as the numbers, so turning loop numbers off keeps the
+    /// joined name as plain as the rest.
+    public static func baseName(sourceURL: URL, cropped: Bool, trimmed: Bool, loopNumber: Int? = nil, speed: Double = 1, rotation: Int = 0, options: FilenameOptions = .standard, joined: Bool = false) -> String {
         var name = sourceURL.deletingPathExtension().lastPathComponent
-        if options.includeLoopNumber, let loopNumber {
-            name += " - loop \(String(format: "%02d", max(1, loopNumber)))"
+        if options.includeLoopNumber {
+            if joined { name += " - all loops" }
+            else if let loopNumber { name += " - loop \(String(format: "%02d", max(1, loopNumber)))" }
         }
         let showsTrim = options.includeTrim && trimmed
         let showsCrop = options.includeCrop && cropped

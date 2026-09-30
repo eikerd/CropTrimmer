@@ -18,7 +18,9 @@ struct ReviewView: View {
             HStack { Text("Exports").font(.title2); Spacer(); Button("Done") { resultPlayer?.pause(); dismiss() }.keyboardShortcut(.defaultAction) }
             if let result = selected {
                 HStack(alignment: .top, spacing: 12) {
-                    comparison("Original", image: originalImage)
+                    // A joined clip is not a trim of one source range, so there is no "before" to
+                    // stand beside it; see loadPreviews.
+                    if result.segments == 1 { comparison("Original", image: originalImage) }
                     if let player = resultPlayer {
                         VStack(alignment: .leading) { Text("Exported · \(result.width) × \(result.height)").font(.headline); PlayerSurface(player: player).frame(height: 230).background(.black) }
                     } else { comparison("Exported · \(result.width) × \(result.height)", image: resultImage) }
@@ -30,8 +32,14 @@ struct ReviewView: View {
                         Text(result.url.lastPathComponent).font(.headline).textSelection(.enabled)
                         Text("\(timeLabel(result.duration)) · \(result.width) × \(result.height) · \(byteLabel(result.bytes))").monospacedDigit()
                         Text(result.method == .copy ? "Fast trim · source quality unchanged" : "Re-encoded · \(result.quality?.rawValue ?? "Balanced")")
-                        Text("Requested: \(timeLabel(result.settings.start)) – \(timeLabel(result.settings.end))").monospacedDigit()
-                        Text(String(format: "Actual boundary shifts: %+.3f s / %+.3f s", result.actualStart - result.settings.start, result.actualEnd - result.settings.end)).monospacedDigit()
+                        // A joined clip has as many requested ranges as it has loops, so one pair of
+                        // boundaries would describe only its first loop. It says what it is instead.
+                        if result.segments > 1 {
+                            Text("Joined from \(result.segments) loops, in timeline order").monospacedDigit()
+                        } else {
+                            Text("Requested: \(timeLabel(result.settings.start)) – \(timeLabel(result.settings.end))").monospacedDigit()
+                            Text(String(format: "Actual boundary shifts: %+.3f s / %+.3f s", result.actualStart - result.settings.start, result.actualEnd - result.settings.end)).monospacedDigit()
+                        }
                         if !result.note.isEmpty { Text(result.note).foregroundStyle(.secondary) }
                     }.font(.system(size: 12))
                     Spacer()
@@ -75,9 +83,14 @@ struct ReviewView: View {
         originalImage = nil; resultImage = nil; previewError = nil; originalDetails = ""
         let resultTime = min(result.duration / 2, max(0, result.duration - 0.01))
         do {
-            async let original = frame(url: result.sourceURL, time: result.actualStart + resultTime)
             async let exported = frame(url: result.url, time: resultTime)
-            let (sourceImage, outputImage) = try await (original, exported)
+            // A joined clip has no single source frame to sit beside it: its middle can fall in any
+            // loop, so `actualStart + resultTime` would point at footage from somewhere else in the
+            // movie and the pair would read as a bug in the export. It shows the exported picture
+            // alone rather than an invented comparison.
+            let sourceImage: NSImage? = result.segments > 1 ? nil
+                : try await frame(url: result.sourceURL, time: result.actualStart + resultTime)
+            let outputImage = try await exported
             guard !Task.isCancelled, selected?.id == result.id else { return }
             originalImage = sourceImage; resultImage = outputImage
             let asset = AVURLAsset(url: result.sourceURL)

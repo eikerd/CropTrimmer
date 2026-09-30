@@ -924,34 +924,98 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    func export() { beginExportQueue(all: false) }
-    func exportLoop(_ id: UUID) { beginExportQueue(all: false, loopID: id) }
-    func exportQueue() { beginExportQueue(all: true) }
+    func export() { beginExport(all: false) }
+    func exportLoop(_ id: UUID) { beginExport(all: false, loopID: id) }
+    /// One file per loop, numbered in timeline order.
+    func exportEach() { beginExport(all: true) }
 
-    private func beginExportQueue(all: Bool, loopID: UUID? = nil) {
+    /// Every loop end to end in one clip, in timeline order. Loops that do not share a frame size
+    /// are the owner's call, asked here, once, rather than settled quietly by the renderer.
+    func exportAll() {
+        guard let source, !isBusy, !showReview, !cropAdjusting, !hasInputErrors else { return }
+        let entries = numberedEntries(all: true, target: nil)
+        guard !entries.isEmpty else { return }
+        // One loop has nothing to join, and joining it would re-encode what the ordinary path can
+        // often copy outright, so a lone loop exports exactly as Export Each would export it —
+        // including on a movie no encode may touch, which that path can still copy.
+        guard entries.count > 1 else { return beginExport(all: true) }
+        // Joining always encodes, so a movie no encode may touch is refused here rather than after
+        // the last loop has been rendered. Export Each can still copy each loop out untouched.
+        if let restriction = source.encodingRestriction, restriction != MediaEngine.oddDimensionRestriction {
+            errorMessage = restriction + " Joining re-encodes, so these loops cannot be chained into one clip. Export Each still exports them separately."
+            return
+        }
+        guard let frame = joinFrameChoice(entries.map { frameSize(of: $0.1, source: source) }) else { return }
+        chooseDirectory(source: source) { [weak self] directory in
+            self?.startJoinedExport(source: source, entries: entries, directory: directory, frame: frame)
+        }
+    }
+
+    private func beginExport(all: Bool, loopID: UUID? = nil) {
         guard let source, !isBusy, !showReview, !cropAdjusting else { return }
         let target = loopID ?? loops.selectedID
         guard all ? !hasInputErrors : target.map({ !hasErrors(for: $0) }) == true else { return }
-        let entries = loops.ranges.enumerated().compactMap { index, loop -> (Int, EditSettings)? in
+        let entries = numberedEntries(all: all, target: target)
+        guard !entries.isEmpty else { return }
+        chooseDirectory(source: source) { [weak self] directory in
+            self?.startExportQueue(source: source, entries: entries, directory: directory)
+        }
+    }
+
+    /// The loops to export, each with the number it shows in the queue and in its filename.
+    private func numberedEntries(all: Bool, target: UUID?) -> [(Int, EditSettings)] {
+        loops.ranges.enumerated().compactMap { index, loop -> (Int, EditSettings)? in
             all || loop.id == target ? (index + 1, loop.settings) : nil
         }
-        guard !entries.isEmpty else { return }
+    }
+
+    /// The frame one loop exports into, before any joining: its crop when it has one, otherwise
+    /// the whole picture as that loop turns it.
+    private func frameSize(of settings: EditSettings, source: MediaSource) -> (width: Int, height: Int) {
+        settings.cropEnabled ? (width: settings.crop.width, height: settings.crop.height) : settings.pictureSize(of: source)
+    }
+
+    /// The original folder when it can be written to, otherwise wherever the owner points the panel.
+    /// The edit is re-checked on the way back, because the panel is not modal and loops can move
+    /// under it; the export is abandoned rather than run against a range nobody chose.
+    private func chooseDirectory(source: MediaSource, then work: @escaping (URL) -> Void) {
         let directory = source.url.deletingLastPathComponent()
-        if FileManager.default.isWritableFile(atPath: directory.path) {
-            startExportQueue(source: source, entries: entries, directory: directory)
-        } else {
-            let sourceGeneration = generation
-            let snapshot = loops
-            let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
-            panel.prompt = "Export Here"; panel.message = "The original folder is not writable. Choose where to save the new movies."
-            panel.begin { [weak self] response in
-                Task { @MainActor in
-                    guard let self, response == .OK, let directory = panel.url,
-                          self.generation == sourceGeneration, self.loops == snapshot else { return }
-                    self.startExportQueue(source: source, entries: entries, directory: directory)
-                }
+        if FileManager.default.isWritableFile(atPath: directory.path) { return work(directory) }
+        let sourceGeneration = generation
+        let snapshot = loops
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        panel.prompt = "Export Here"; panel.message = "The original folder is not writable. Choose where to save the new movies."
+        panel.begin { [weak self] response in
+            Task { @MainActor in
+                guard let self, response == .OK, let directory = panel.url,
+                      self.generation == sourceGeneration, self.loops == snapshot else { return }
+                work(directory)
             }
         }
+    }
+
+    /// Which frame a joined clip renders into, or nil when the owner cancels. Loops that already
+    /// share one size leave nothing to decide, so nothing is asked.
+    private func joinFrameChoice(_ sizes: [(width: Int, height: Int)]) -> JoinFrame? {
+        guard let fit = MediaEngine.joinFrame(sizes, mode: .fitAll),
+              let matched = MediaEngine.joinFrame(sizes, mode: .matchFirst) else { return .fitAll }
+        guard let prompt = JoinFramePrompt(sizes: sizes, fit: fit, matched: matched) else { return .fitAll }
+        switch Self.joinFrameAlert(prompt).runModal() {
+        case .alertFirstButtonReturn: return .fitAll
+        case .alertSecondButtonReturn: return .matchFirst
+        default: return nil
+        }
+    }
+
+    /// Built apart from running it, so the dialog the owner sees can also be rendered for review.
+    static func joinFrameAlert(_ prompt: JoinFramePrompt) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = prompt.message
+        alert.informativeText = prompt.detail
+        alert.addButton(withTitle: prompt.fitTitle)
+        alert.addButton(withTitle: prompt.matchTitle)
+        alert.addButton(withTitle: prompt.cancelTitle)
+        return alert
     }
 
     private func startExportQueue(source: MediaSource, entries: [(Int, EditSettings)], directory: URL) {
@@ -998,6 +1062,87 @@ final class EditorModel: ObservableObject {
             schedulePlan(preserveStatus: true)
         }
     }
+
+    /// Renders every loop, then joins the finished segments into one clip. Nothing partial is ever
+    /// published: the segments are this job's own working files, and a failure anywhere leaves the
+    /// folder as it was rather than a pile of numbered pieces of a clip that was never made.
+    private func startJoinedExport(source: MediaSource, entries: [(Int, EditSettings)], directory: URL, frame: JoinFrame) {
+        guard !isBusy, !showReview else { return }
+        pause(); planningTask?.cancel(); isBusy = true; progress = 0; status = "Preparing one clip…"
+        let id = UUID(); jobID = id
+        jobTask = Task {
+            let scoped = directory.startAccessingSecurityScopedResource()
+            defer { if scoped { directory.stopAccessingSecurityScopedResource() } }
+            var temporaries: [URL] = []
+            defer { for url in temporaries { OutputPublisher.discard(temporaryURL: url) } }
+            do {
+                var plans: [(Int, ExportPlan)] = []
+                for (number, edit) in entries {
+                    try Task.checkCancellation()
+                    status = "Checking Loop \(number)…"
+                    plans.append((number, try await engine.plan(source: source, settings: edit)))
+                }
+                // Rendering the loops takes the first four fifths of the bar, the join the last.
+                var segments: [URL] = []
+                var lengths: [Double] = []
+                for (offset, entry) in plans.enumerated() {
+                    try Task.checkCancellation()
+                    let (number, plan) = entry
+                    let temp = OutputPublisher.temporaryURL(in: directory, extension: plan.fileExtension)
+                    temporaries.append(temp)
+                    let rendered = try await engine.export(plan: plan, to: temp) { [weak self] value, message in
+                        Task { @MainActor in
+                            guard self?.jobID == id else { return }
+                            self?.progress = (Double(offset) + value) / Double(plans.count) * 0.8
+                            self?.status = "Loop \(number) · \(message)"
+                        }
+                    }
+                    segments.append(temp); lengths.append(rendered.duration)
+                }
+                try Task.checkCancellation()
+                guard let size = MediaEngine.joinFrame(plans.map { (width: $0.1.width, height: $0.1.height) }, mode: frame),
+                      let settings = plans.first?.1.settings else {
+                    throw MediaError.failed("The joined frame could not be worked out from these loops.")
+                }
+                let joined = OutputPublisher.temporaryURL(in: directory, extension: "mp4")
+                temporaries.append(joined)
+                let request = JoinRequest(segments: segments, width: size.width, height: size.height,
+                                          quality: joinQuality(plans.map(\.1)),
+                                          expectedDuration: lengths.reduce(0, +), settings: settings, source: source)
+                var result = try await engine.join(request, to: joined) { [weak self] value, message in
+                    Task { @MainActor in
+                        guard self?.jobID == id else { return }
+                        self?.progress = 0.8 + value * 0.2
+                        self?.status = "Joining \(plans.count) loops · \(message)"
+                    }
+                }
+                try Task.checkCancellation()
+                guard try SourceIdentity(url: source.url) == source.identity else { throw MediaError.sourceChanged }
+                // A part of the name only survives when every loop agrees on it; one clip cannot
+                // claim a speed or a turn that only some of the loops inside it were given.
+                let speeds = Set(plans.map(\.1.settings.speed))
+                let rotations = Set(plans.map(\.1.settings.rotation))
+                let published = try OutputPublisher.publish(temporaryURL: joined, sourceURL: source.url,
+                                                           cropped: plans.contains { $0.1.settings.cropEnabled }, trimmed: true,
+                                                           directory: directory, extension: "mp4",
+                                                           speed: speeds.count == 1 ? (speeds.first ?? 1) : 1,
+                                                           rotation: rotations.count == 1 ? (rotations.first ?? 0) : 0,
+                                                           options: filenameOptions, joined: true)
+                result.url = published; results.append(result)
+                progress = 1; status = "Saved \(plans.count) loops as one clip in \(directory.lastPathComponent)"
+                showReview = true
+            } catch { handleJobError(error) }
+            finishJob(id)
+            schedulePlan(preserveStatus: true)
+        }
+    }
+
+    /// The joined clip is a single encode, so it takes the best quality any of its loops asked for.
+    /// A loop that was going to be copied asked for source quality, the highest there is.
+    private func joinQuality(_ plans: [ExportPlan]) -> Quality {
+        plans.map { $0.method == .copy ? Quality.high : $0.settings.quality }.min { $0.crf < $1.crf } ?? .balanced
+    }
+
     private func handleJobError(_ error: Error) {
         if error is CancellationError || (error as? MediaError)?.errorDescription == MediaError.cancelled.errorDescription { status = "Cancelled · your edit is preserved" }
         else { errorMessage = error.localizedDescription; status = "Operation failed · your edit is preserved" }

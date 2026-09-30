@@ -6,6 +6,63 @@ public enum Quality: String, CaseIterable, Codable, Sendable {
     public var crf: Int { switch self { case .high: 18; case .balanced: 21; case .smaller: 25 } }
 }
 public enum ResolvedMethod: String, Codable, Sendable { case copy = "Fast trim", encode = "Re-encode" }
+
+/// The frame a joined clip renders into when its loops are not all the same size — which happens
+/// as soon as two loops crop differently, or one is turned a quarter and another is not. Neither
+/// choice crops or stretches a loop: a loop smaller than the frame is centred on black.
+public enum JoinFrame: String, CaseIterable, Sendable {
+    /// The smallest frame that holds every loop at full size: the widest width beside the tallest
+    /// height. Nothing is ever scaled down, so mixing a portrait loop with a landscape one gives
+    /// a squarer frame than either of them.
+    case fitAll = "Fit every loop"
+    /// The first loop's own frame. Later loops are scaled down to fit inside it.
+    case matchFirst = "Match the first loop"
+}
+
+/// The question Export All asks when its loops are not all the same size, and nothing else: the
+/// words, and the frame each answer produces. It lives here so the wording can be tested and the
+/// editor is left holding only the dialog.
+public struct JoinFramePrompt: Equatable, Sendable {
+    public let message: String
+    public let detail: String
+    public let fitTitle: String
+    public let matchTitle: String
+    public let cancelTitle = "Cancel"
+
+    /// Nil when every loop already renders into one frame — there is nothing to decide, so the
+    /// owner is not stopped to decide it.
+    public init?(sizes: [(width: Int, height: Int)], fit: (width: Int, height: Int), matched: (width: Int, height: Int)) {
+        guard let first = sizes.first, sizes.contains(where: { $0 != first }) else { return nil }
+        message = "These loops are not all the same size."
+        detail = sizes.enumerated().map { "Loop \($0.offset + 1) is \($0.element.width) × \($0.element.height)" }.joined(separator: ", ")
+            + ". Choose the frame the joined clip is rendered into. A loop smaller than the frame is centred on black; none of them is cropped or stretched."
+        fitTitle = "Fit Every Loop · \(fit.width) × \(fit.height)"
+        matchTitle = "Match Loop 1 · \(matched.width) × \(matched.height)"
+    }
+}
+
+/// One joined export: finished segment movies, the frame they are composited into, and the
+/// stream settings the single output carries. Assembled by the editor, carried out by the engine.
+public struct JoinRequest: Sendable {
+    public let segments: [URL]
+    public let width: Int
+    public let height: Int
+    public let quality: Quality
+    /// The segment lengths added up, as measured in the finished segments rather than planned.
+    public let expectedDuration: Double
+    /// The first loop's settings, so the review sheet can describe the clip it came from.
+    public let settings: EditSettings
+    /// The movie every loop came from. The join takes its frame rate, whether there is sound to
+    /// carry across the cuts, and the encoding restrictions it must honour from here.
+    public let source: MediaSource
+    public var hasAudio: Bool { source.audioCount > 0 }
+    public init(segments: [URL], width: Int, height: Int, quality: Quality,
+                expectedDuration: Double, settings: EditSettings, source: MediaSource) {
+        self.segments = segments; self.width = width; self.height = height
+        self.quality = quality; self.expectedDuration = expectedDuration
+        self.settings = settings; self.source = source
+    }
+}
 public enum PlaybackMode: String, CaseIterable, Codable, Sendable {
     case repeatSelection = "A–B repeat", whole = "Whole movie", once = "Play selection once"
     /// Every loop in turn, in timeline order, wrapping round at the last one and playing nothing
@@ -177,8 +234,11 @@ public struct ExportResult: Identifiable, Codable, Sendable {
     public var duration: Double; public var width: Int; public var height: Int; public var bytes: Int64
     public var method: ResolvedMethod; public var quality: Quality?; public var settings: EditSettings
     public var actualStart: Double; public var actualEnd: Double; public var note: String
-    public init(id: UUID = UUID(), url: URL, sourceURL: URL, created: Date = Date(), duration: Double, width: Int, height: Int, bytes: Int64, method: ResolvedMethod, quality: Quality?, settings: EditSettings, actualStart: Double, actualEnd: Double, note: String = "") {
-        self.id = id; self.url = url; self.sourceURL = sourceURL; self.created = created; self.duration = duration; self.width = width; self.height = height; self.bytes = bytes; self.method = method; self.quality = quality; self.settings = settings; self.actualStart = actualStart; self.actualEnd = actualEnd; self.note = note
+    /// How many loops this one file was made of. One for an ordinary export; the joined clip counts
+    /// its loops, because a single pair of requested boundaries would say nothing true about it.
+    public var segments: Int
+    public init(id: UUID = UUID(), url: URL, sourceURL: URL, created: Date = Date(), duration: Double, width: Int, height: Int, bytes: Int64, method: ResolvedMethod, quality: Quality?, settings: EditSettings, actualStart: Double, actualEnd: Double, note: String = "", segments: Int = 1) {
+        self.id = id; self.url = url; self.sourceURL = sourceURL; self.created = created; self.duration = duration; self.width = width; self.height = height; self.bytes = bytes; self.method = method; self.quality = quality; self.settings = settings; self.actualStart = actualStart; self.actualEnd = actualEnd; self.note = note; self.segments = segments
     }
 }
 public enum MediaError: LocalizedError {

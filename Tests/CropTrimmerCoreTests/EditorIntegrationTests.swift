@@ -265,7 +265,7 @@ final class EditorIntegrationTests: XCTestCase {
         XCTAssertEqual(model.settings, firstSettings)
         model.selectLoop(second)
         XCTAssertEqual(model.settings, secondSettings)
-        model.exportQueue()
+        model.exportEach()
         XCTAssertTrue(model.isBusy)
         model.selectLoop(first)
         XCTAssertEqual(model.loops.selectedID, second, "Queue edits freeze during export")
@@ -276,7 +276,7 @@ final class EditorIntegrationTests: XCTestCase {
         XCTAssertEqual(model.results.map(\.width), [80, 160])
         XCTAssertEqual(model.results.map { $0.url.lastPathComponent }, ["Fixture - loop 01 - trim crop.mp4", "Fixture - loop 02 - trim.mp4"])
         model.showReview = false
-        model.exportQueue()
+        model.exportEach()
         model.cancel()
         try await waitUntil { !model.isBusy && model.plan != nil }
         XCTAssertEqual(model.results.count, 2)
@@ -316,6 +316,121 @@ final class EditorIntegrationTests: XCTestCase {
     /// The playhead rides on A while a loop is dragged, so it must not also be a snap target:
     /// otherwise every update finds a target exactly where the drag just put the playhead, and the
     /// loop sticks instead of following the pointer.
+    @MainActor
+    func testExportAllChainsEveryLoopIntoOneClip() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-joined-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Fixture.mp4")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        // Audio as well as picture: a joined clip concatenates both, and a silent fixture would
+        // never run the half of the filtergraph that carries sound across the joins.
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25",
+                             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "12",
+                             "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", "-c:a", "aac", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy }
+        XCTAssertNotNil(model.source, model.errorMessage ?? "Open failed")
+
+        model.addLoop()
+        let first = try XCTUnwrap(model.loops.selectedID)
+        model.settings.start = 0; model.settings.end = 2
+        model.addLoop()
+        let second = try XCTUnwrap(model.loops.selectedID)
+        model.settings.start = 4; model.settings.end = 6.5
+        // Neither loop crops, so both render into the source's own frame and the size question
+        // the owner would otherwise be asked never comes up.
+        XCTAssertEqual(model.loops.ranges.map(\.id), [first, second])
+        try await waitUntil { model.queuePlans[first] != nil && model.queuePlans[second] != nil }
+
+        model.exportAll()
+        XCTAssertTrue(model.isBusy)
+        try await waitUntil({ !model.isBusy }, timeout: 90)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.results.count, 1, "Export All saves one file, not one per loop")
+        let joined = try XCTUnwrap(model.results.first)
+        XCTAssertEqual(joined.segments, 2)
+        XCTAssertEqual(joined.url.lastPathComponent, "Fixture - all loops - trim.mp4")
+        XCTAssertEqual(joined.width, 160); XCTAssertEqual(joined.height, 120)
+        XCTAssertEqual(joined.duration, 4.5, accuracy: 0.3, "The clip runs for both loops end to end")
+        XCTAssertEqual(joined.method, .encode, "Joining always re-encodes")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: joined.url.path))
+        var contents = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertFalse(contents.contains { $0.hasPrefix(".croptrimmer-") }, "Segments are working files and do not survive the job")
+        XCTAssertEqual(contents.filter { $0.hasSuffix(".mp4") }.sorted(), ["Fixture - all loops - trim.mp4", "Fixture.mp4"])
+
+        // One loop has nothing to chain, so Export All exports it the ordinary way — under its own
+        // loop number, and without a re-encode forced on it by a join that never happens.
+        model.showReview = false
+        model.removeLoop(second)
+        try await waitUntil { !model.isBusy && model.loops.ranges.count == 1 }
+        model.exportAll()
+        try await waitUntil({ !model.isBusy }, timeout: 90)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.results.count, 2)
+        let lone = try XCTUnwrap(model.results.last)
+        XCTAssertEqual(lone.segments, 1)
+        XCTAssertEqual(lone.url.lastPathComponent, "Fixture - loop 01 - trim.mp4")
+        contents = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertFalse(contents.contains { $0.hasPrefix(".croptrimmer-") })
+    }
+
+    /// A movie no encode may touch can still be exported one loop at a time, because that path can
+    /// copy it. Only the join is refused, and only when there is actually a join to do.
+    @MainActor
+    func testARestrictedSourceStillExportsALoneLoopButRefusesToJoin() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-restricted-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Fixture.mp4")
+        // Non-square pixels are one of the things MediaSource.encodingRestriction refuses, and the
+        // cheapest of them to produce.
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "8",
+                             "-vf", "setsar=4/3", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy }
+        let source = try XCTUnwrap(model.source, model.errorMessage ?? "Open failed")
+        XCTAssertNotNil(source.encodingRestriction, "the fixture must be one an encode refuses")
+
+        // One loop: nothing to join, so it takes the ordinary path and exports.
+        model.addLoop()
+        model.settings.start = 0; model.settings.end = 2
+        try await waitUntil { model.queuePlans[model.loops.selectedID!] != nil }
+        model.exportAll()
+        XCTAssertNil(model.errorMessage, "a lone loop must not be refused for a restriction the join never hits")
+        try await waitUntil({ !model.isBusy }, timeout: 60)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.results.count, 1)
+        XCTAssertEqual(model.results[0].url.lastPathComponent, "Fixture - loop 01 - trim.mp4")
+
+        // Two loops: now there is a join, and the join is an encode this movie cannot take.
+        model.showReview = false
+        model.addLoop()
+        model.settings.start = 4; model.settings.end = 6
+        try await waitUntil { !model.isBusy && model.loops.ranges.count == 2 }
+        model.exportAll()
+        XCTAssertFalse(model.isBusy, "the join is refused before anything is rendered")
+        XCTAssertEqual(model.results.count, 1, "and nothing new is written")
+        let message = try XCTUnwrap(model.errorMessage)
+        XCTAssertTrue(message.contains("non-square pixels"), message)
+        XCTAssertTrue(message.contains("Export Each"), "it has to say what still works: " + message)
+    }
+
     @MainActor
     func testDraggingDoesNotSnapToThePlayheadThatFollowsIt() async throws {
         _ = NSApplication.shared
