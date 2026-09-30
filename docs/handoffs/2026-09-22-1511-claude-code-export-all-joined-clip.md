@@ -5,9 +5,9 @@ model: claude-opus-5
 repo: eikerd/CropTrimmer
 branch: claude/export-all-joined-clip
 pr: https://github.com/eikerd/CropTrimmer/pull/15
-state: pr-open
+state: merged
 deployed: no
-loose_ends: 2 (listed below)
+loose_ends: 3 (listed below)
 supersedes: none
 ---
 
@@ -59,15 +59,39 @@ rounds up to even sizes, which H.264's 4:2:0 chroma requires.
 
 ## Where it is
 
-- Commit `42c0139` feat: Export All chains every loop into one clip.
+- Commits: `42c0139` feat: Export All chains every loop into one clip · `c329ca9` handoff note ·
+  `2a01f94` fix: joined loops keep their size, and the join honours encoding limits ·
+  `04f7c92` fix: a lone loop is not refused for a restriction the join never hits.
 - New: `Sources/CropTrimmerCore` — `JoinFrame`, `JoinRequest`, `JoinFramePrompt` (Models), `MediaEngine.join`,
   `joinFilterGraph`, `joinFrame`, `OutputPublisher` `joined:` naming.
-- Tests: `swift test`, 129 tests, 0 failures, 1 skipped (the render harness), 16 new.
+- Tests: `swift test`, 135 tests, 0 failures, 1 skipped (the render harness), 22 new.
+  `JoinedPictureTests` runs the real engine over real movies and reads real pixels; it fails against
+  the pre-fix filtergraph with "the corner must be padding, not enlarged picture". The restricted-
+  source integration test fails against the round-2 ordering. Both were checked against the broken
+  code, not just the fixed code.
   `JoinedExportTests` covers the frame choice, the filtergraph, the prompt wording and the filename;
   `EditorIntegrationTests.testExportAllChainsEveryLoopIntoOneClip` runs the real thing through ffmpeg —
   two loops with audio, one validated 4.5 s file out, no leftover working files — plus the single-loop
   fallback.
-- Reviews: **none yet**. The PR is a draft; the three rounds and the scorecard have not been done.
+- Reviews: three rounds, all on 2026-09-29/30 after the PR came out of draft.
+  - **Round 1** (`c329ca9`): three real defects. A swift-reviewer pass found that
+    `scale=W:H:force_original_aspect_ratio=decrease` *enlarges* a segment smaller than the joined
+    frame — a 320x240 loop filled a 640x480 clip with upscaled pixels and no bars, contradicting
+    the frame dialog's own promise. Codex found (P1) that an all-copy queue never reaches
+    `encodedPlan`, so the join's unconditional encode bypassed `encodingRestriction` and would
+    silently convert HDR/interlaced/alpha/non-square sources; and (P2) that `ReviewView` compared a
+    joined clip against an unrelated source frame. All three fixed in `2a01f94`.
+  - **Round 2** (`2a01f94`): Codex (P2) caught a regression from round 1's own fix — the restriction
+    check had been placed above the single-loop delegation, so Export All on a one-loop restricted
+    movie errored instead of taking the ordinary path that can copy it. Fixed in `04f7c92`.
+  - **Round 3** (`04f7c92`): see the scorecard.
+  - CodeRabbit reviewed once, at the end, after its free-plan rate limit reset: the whole diff, all
+    twelve files, clean — no inline comments and no findings, rated 4/Complex. It was rate-limited
+    through rounds 1 and 2 and had to be waited out.
+  - Copilot replied "quota limit" on both attempts and reviewed nothing, as on PR #14. ecc-tools'
+    gates passed except its standing generic reference-corpus complaint, which it files against
+    every PR here.
+  - Scorecard: `reports/pr-15.html`.
 
 ## What is deployed
 
@@ -75,17 +99,23 @@ Nothing deploys; Crop Trimmer is a local macOS app. Rebuild from the branch with
 
 ## Loose ends
 
-1. **The PR is a draft with zero review rounds.** It needs the three rounds and `reports/pr-15.html`
-   before it can merge.
-2. **The size-mismatch dialog is not on the Figma canvas.** It is a stock `NSAlert` with no custom
+1. **CodeRabbit's free-plan rate limit shapes review coverage in this repo.** It reviewed nothing
+   for the first two rounds here and had to be waited out. Codex carried the load. If CodeRabbit is
+   meant to be a real second reviewer, the plan is the thing to change.
+2. **The render rule was broken once, mid-review.** The `ReviewView` change (dropping the original
+   pane for joined clips) is visual and was committed before it was rendered. A render was produced
+   afterwards and sent to the owner, and `RenderShotTests.testRenderJoinedReview` now produces it on
+   demand, but the order was wrong. See the proposed rule change below.
+3. **The size-mismatch dialog is not on the Figma canvas.** It is a stock `NSAlert` with no custom
    design, and the file models the app's own surfaces rather than system dialogs (there is no
    `NSOpenPanel` frame either). If the owner wants system dialogs represented, that is its own job.
 
 ## Next agent: start here
 
-Mark PR #15 ready, run the three review rounds, write the scorecard, merge. To exercise the change by
-hand: open a movie, add three loops, give one of them a crop or a quarter turn so the sizes disagree, and
-press Export All — the dialog should name every loop and both frames, and the result should be one file.
+Merged. To exercise the change by hand: open a movie, add three loops, give one of them a crop or a
+quarter turn so the sizes disagree, and press Export All — the dialog should name every loop and both
+frames, and the result should be one file with the smaller loops centred on black at their own size,
+not blown up to fill.
 
 ## Decided by the owner
 
