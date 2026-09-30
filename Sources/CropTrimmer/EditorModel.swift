@@ -935,6 +935,12 @@ final class EditorModel: ObservableObject {
         guard let source, !isBusy, !showReview, !cropAdjusting, !hasInputErrors else { return }
         let entries = numberedEntries(all: true, target: nil)
         guard !entries.isEmpty else { return }
+        // Joining always encodes, so a movie no encode may touch is refused here rather than after
+        // the last loop has been rendered. Export Each can still copy each loop out untouched.
+        if let restriction = source.encodingRestriction, restriction != MediaEngine.oddDimensionRestriction {
+            errorMessage = restriction + " Joining re-encodes, so these loops cannot be chained into one clip. Export Each still exports them separately."
+            return
+        }
         // One loop has nothing to join, and joining it would re-encode what the ordinary path can
         // often copy outright, so a lone loop exports exactly as Export Each would export it.
         guard entries.count > 1 else { return beginExport(all: true) }
@@ -1099,9 +1105,9 @@ final class EditorModel: ObservableObject {
                 }
                 let joined = OutputPublisher.temporaryURL(in: directory, extension: "mp4")
                 temporaries.append(joined)
-                let request = JoinRequest(segments: segments, width: size.width, height: size.height, fps: source.fps,
-                                          quality: joinQuality(plans.map(\.1)), audio: source.audioCount > 0,
-                                          expectedDuration: lengths.reduce(0, +), settings: settings, sourceURL: source.url)
+                let request = JoinRequest(segments: segments, width: size.width, height: size.height,
+                                          quality: joinQuality(plans.map(\.1)),
+                                          expectedDuration: lengths.reduce(0, +), settings: settings, source: source)
                 var result = try await engine.join(request, to: joined) { [weak self] value, message in
                     Task { @MainActor in
                         guard self?.jobID == id else { return }

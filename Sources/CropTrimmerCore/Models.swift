@@ -47,19 +47,20 @@ public struct JoinRequest: Sendable {
     public let segments: [URL]
     public let width: Int
     public let height: Int
-    public let fps: Double
     public let quality: Quality
-    public let audio: Bool
     /// The segment lengths added up, as measured in the finished segments rather than planned.
     public let expectedDuration: Double
     /// The first loop's settings, so the review sheet can describe the clip it came from.
     public let settings: EditSettings
-    public let sourceURL: URL
-    public init(segments: [URL], width: Int, height: Int, fps: Double, quality: Quality, audio: Bool,
-                expectedDuration: Double, settings: EditSettings, sourceURL: URL) {
-        self.segments = segments; self.width = width; self.height = height; self.fps = fps
-        self.quality = quality; self.audio = audio; self.expectedDuration = expectedDuration
-        self.settings = settings; self.sourceURL = sourceURL
+    /// The movie every loop came from. The join takes its frame rate, whether there is sound to
+    /// carry across the cuts, and the encoding restrictions it must honour from here.
+    public let source: MediaSource
+    public var hasAudio: Bool { source.audioCount > 0 }
+    public init(segments: [URL], width: Int, height: Int, quality: Quality,
+                expectedDuration: Double, settings: EditSettings, source: MediaSource) {
+        self.segments = segments; self.width = width; self.height = height
+        self.quality = quality; self.expectedDuration = expectedDuration
+        self.settings = settings; self.source = source
     }
 }
 public enum PlaybackMode: String, CaseIterable, Codable, Sendable {

@@ -179,10 +179,18 @@ public actor MediaEngine {
         guard request.width >= 2, request.height >= 2, request.width % 2 == 0, request.height % 2 == 0 else {
             throw MediaError.invalid("The joined frame must be even and at least two pixels on each side.")
         }
+        // Joining always encodes, so it owes the same restrictions an encoded export does. Loops that
+        // all resolve to a stream copy never reach `encodedPlan`, which is where that check normally
+        // lives — without this, Export All would quietly convert an HDR or interlaced source that
+        // every other encoding path refuses. Odd dimensions are the exception: the joined frame is
+        // even by construction and each segment is padded into it.
+        if let restriction = request.source.encodingRestriction, restriction != Self.oddDimensionRestriction {
+            throw MediaError.unavailable(restriction)
+        }
         let destination = temporaryURL.standardizedFileURL
         guard temporaryURL.isFileURL, !FileManager.default.fileExists(atPath: temporaryURL.path),
               !request.segments.contains(where: { $0.standardizedFileURL == destination }),
-              destination != request.sourceURL.standardizedFileURL else {
+              destination != request.source.url.standardizedFileURL else {
             throw MediaError.invalid("The joined output must be a new file, separate from its loops and the original.")
         }
         var success = false
@@ -190,23 +198,23 @@ public actor MediaEngine {
         // One rate for the whole clip. Loops carrying a speed leave their segment with the source's
         // frame count over a shorter span; conforming each segment here keeps the join from
         // interleaving two timebases, and changes no loop's apparent speed.
-        let rate = request.fps > 0 ? request.fps : 30
+        let rate = request.source.fps > 0 ? request.source.fps : 30
         var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-n"]
         for segment in request.segments { args += ["-i", segment.path] }
         args += ["-filter_complex", Self.joinFilterGraph(count: request.segments.count, width: request.width,
-                                                         height: request.height, fps: rate, audio: request.audio),
+                                                         height: request.height, fps: rate, audio: request.hasAudio),
                  "-map", "[vout]"]
-        if request.audio { args += ["-map", "[aout]"] }
+        if request.hasAudio { args += ["-map", "[aout]"] }
         args += ["-map_metadata", "-1", "-map_chapters", "-1", "-c:v", "libx264", "-preset", "medium",
                  "-crf", String(request.quality.crf), "-pix_fmt", "yuv420p", "-metadata:s:v:0", "rotate=0"]
-        if request.audio { args += ["-c:a", "aac", "-b:a", "192k"] }
+        if request.hasAudio { args += ["-c:a", "aac", "-b:a", "192k"] }
         args += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-f", "mp4", temporaryURL.path]
         _ = try await run("ffmpeg", arguments: args, duration: request.expectedDuration, progress: progress)
         progress(0.94, "Validating the joined movie")
         let output = try await inspect(temporaryURL)
         guard output.identity.size > 0, output.width == request.width, output.height == request.height,
               output.videoCodec == "h264", output.rotation == 0,
-              output.audioCount == (request.audio ? 1 : 0) else {
+              output.audioCount == (request.hasAudio ? 1 : 0) else {
             throw MediaError.failed("The joined movie's streams or dimensions do not match the frame that was chosen.")
         }
         // Each join lands on the output frame grid, so allow one frame per segment for the rounding.
@@ -221,7 +229,7 @@ public actor MediaEngine {
         }
         success = true
         progress(1, "Validated")
-        return ExportResult(url: output.url, sourceURL: request.sourceURL, duration: output.duration,
+        return ExportResult(url: output.url, sourceURL: request.source.url, duration: output.duration,
                             width: output.width, height: output.height, bytes: output.identity.size,
                             method: .encode, quality: request.quality, settings: request.settings,
                             actualStart: 0, actualEnd: output.duration,
@@ -238,7 +246,12 @@ public actor MediaEngine {
         var chains: [String] = []
         var inputs = ""
         for index in 0..<count {
-            chains.append("[\(index):v:0]scale=\(width):\(height):force_original_aspect_ratio=decrease:flags=lanczos," +
+            // The scale target is the segment's own size bounded by the frame, so a segment that
+            // already fits is left alone and only an oversized one is reduced. Scaling to the frame
+            // itself would enlarge every smaller loop until it touched an edge — the opposite of the
+            // "centred on black" the owner is promised when they choose the frame.
+            chains.append("[\(index):v:0]scale='min(\(width),iw)':'min(\(height),ih)'" +
+                          ":force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos," +
                           "pad=\(width):\(height):(ow-iw)/2:(oh-ih)/2:color=black,setsar=1," +
                           "fps=\(decimal(fps)),format=yuv420p[v\(index)]")
             inputs += "[v\(index)]"
@@ -273,9 +286,12 @@ public actor MediaEngine {
         return nil
     }
 
+    /// The one restriction an even crop — or a joined frame — can satisfy on its own.
+    public static let oddDimensionRestriction = "Encoding is not supported for odd full-frame dimensions (choose an even crop)."
+
     private func encodedPlan(_ source: MediaSource, _ settings: EditSettings, reason: String) throws -> ExportPlan {
         if let restriction = source.encodingRestriction {
-            let oddOnly = restriction == "Encoding is not supported for odd full-frame dimensions (choose an even crop)."
+            let oddOnly = restriction == Self.oddDimensionRestriction
             if !oddOnly || !settings.cropEnabled { throw MediaError.unavailable(restriction) }
         }
         return try ExportPlan(source: source, settings: settings, method: .encode, plannedStart: settings.start, plannedEnd: settings.end,

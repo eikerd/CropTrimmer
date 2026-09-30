@@ -50,7 +50,7 @@ final class JoinedExportTests: XCTestCase {
     func testEverySegmentIsConformedAndConcatenated() {
         let graph = MediaEngine.joinFilterGraph(count: 3, width: 1920, height: 1080, fps: 30, audio: true)
         for index in 0..<3 {
-            XCTAssertTrue(graph.contains("[\(index):v:0]scale=1920:1080:force_original_aspect_ratio=decrease"), graph)
+            XCTAssertTrue(graph.contains("[\(index):v:0]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease"), graph)
             XCTAssertTrue(graph.contains("pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black"), graph)
             XCTAssertTrue(graph.contains("[\(index):a:0]aformat="), graph)
         }
@@ -108,6 +108,55 @@ final class JoinedExportTests: XCTestCase {
         XCTAssertTrue(prompt.detail.contains("centred on black"), prompt.detail)
         XCTAssertEqual(prompt.fitTitle, "Fit Every Loop · 1920 × 1920")
         XCTAssertEqual(prompt.matchTitle, "Match Loop 1 · 1920 × 1080")
+    }
+
+    /// The scale target is bounded by each segment's own size, so a segment already inside the frame
+    /// is untouched. Scaling to the frame itself would enlarge every smaller loop until it touched an
+    /// edge, which is the opposite of the "centred on black" the owner is promised.
+    func testTheGraphNeverEnlargesASegment() {
+        let graph = MediaEngine.joinFilterGraph(count: 1, width: 1920, height: 1080, fps: 30, audio: false)
+        XCTAssertTrue(graph.contains("scale='min(1920,iw)':'min(1080,ih)'"), graph)
+        XCTAssertFalse(graph.contains("scale=1920:1080"), "a bare frame-sized scale target upscales smaller segments: " + graph)
+        XCTAssertTrue(graph.contains("force_divisible_by=2"), "odd scaled sizes would pad at odd offsets: " + graph)
+    }
+
+    // MARK: joining honours what the encoder may not touch
+
+    /// Loops that all resolve to a stream copy never reach `encodedPlan`, where this check normally
+    /// lives — but the join encodes regardless, so it has to make the check itself.
+    func testJoiningRefusesASourceNoEncodeMayTouch() async throws {
+        let source = MediaSource(url: url, identity: try SourceIdentity(url: url), duration: 30,
+                                 width: 1920, height: 1080, encodedWidth: 1920, encodedHeight: 1080,
+                                 rotation: 0, fps: 30, videoCodec: "hevc", audioCount: 0, subtitleCount: 0,
+                                 format: "mov", encodingRestriction: "Encoding is not supported for HDR or wide-color video.")
+        let request = JoinRequest(segments: [url, url], width: 1920, height: 1080, quality: .high,
+                                  expectedDuration: 4, settings: EditSettings(source: source), source: source)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        do {
+            _ = try await MediaEngine().join(request, to: out) { _, _ in }
+            XCTFail("An HDR source must not be quietly converted by Export All")
+        } catch {
+            XCTAssertEqual((error as? MediaError)?.errorDescription, "Encoding is not supported for HDR or wide-color video.")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: out.path), "nothing is written when the join is refused")
+    }
+
+    /// Odd dimensions are the one restriction a join resolves on its own: the frame is even by
+    /// construction and every segment is padded into it.
+    func testJoiningAcceptsAnOddSizedSource() async throws {
+        let source = MediaSource(url: url, identity: try SourceIdentity(url: url), duration: 30,
+                                 width: 641, height: 481, encodedWidth: 641, encodedHeight: 481,
+                                 rotation: 0, fps: 30, videoCodec: "h264", audioCount: 0, subtitleCount: 0,
+                                 format: "mov", encodingRestriction: MediaEngine.oddDimensionRestriction)
+        let request = JoinRequest(segments: [url, url], width: 642, height: 482, quality: .high,
+                                  expectedDuration: 4, settings: EditSettings(source: source), source: source)
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        do {
+            _ = try await MediaEngine().join(request, to: out) { _, _ in }
+        } catch {
+            // It fails later, on the fixture that is not a real movie — but never on the restriction.
+            XCTAssertNotEqual((error as? MediaError)?.errorDescription, MediaEngine.oddDimensionRestriction)
+        }
     }
 
     /// Comparing tuples through XCTAssertEqual needs a nominal type.
