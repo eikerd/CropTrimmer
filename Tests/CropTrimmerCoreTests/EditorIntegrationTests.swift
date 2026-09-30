@@ -382,6 +382,55 @@ final class EditorIntegrationTests: XCTestCase {
         XCTAssertFalse(contents.contains { $0.hasPrefix(".croptrimmer-") })
     }
 
+    /// A movie no encode may touch can still be exported one loop at a time, because that path can
+    /// copy it. Only the join is refused, and only when there is actually a join to do.
+    @MainActor
+    func testARestrictedSourceStillExportsALoneLoopButRefusesToJoin() async throws {
+        _ = NSApplication.shared
+        let ffmpeg = TestTools.ffmpeg
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: ffmpeg))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CropTrimmer-restricted-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Fixture.mp4")
+        // Non-square pixels are one of the things MediaSource.encodingRestriction refuses, and the
+        // cheapest of them to produce.
+        let process = Process(); process.executableURL = URL(fileURLWithPath: ffmpeg)
+        process.arguments = ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=25", "-t", "8",
+                             "-vf", "setsar=4/3", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", url.path]
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
+        let model = EditorModel()
+        defer { model.shutdown() }
+        model.open(url)
+        try await waitUntil { !model.isBusy }
+        let source = try XCTUnwrap(model.source, model.errorMessage ?? "Open failed")
+        XCTAssertNotNil(source.encodingRestriction, "the fixture must be one an encode refuses")
+
+        // One loop: nothing to join, so it takes the ordinary path and exports.
+        model.addLoop()
+        model.settings.start = 0; model.settings.end = 2
+        try await waitUntil { model.queuePlans[model.loops.selectedID!] != nil }
+        model.exportAll()
+        XCTAssertNil(model.errorMessage, "a lone loop must not be refused for a restriction the join never hits")
+        try await waitUntil({ !model.isBusy }, timeout: 60)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.results.count, 1)
+        XCTAssertEqual(model.results[0].url.lastPathComponent, "Fixture - loop 01 - trim.mp4")
+
+        // Two loops: now there is a join, and the join is an encode this movie cannot take.
+        model.showReview = false
+        model.addLoop()
+        model.settings.start = 4; model.settings.end = 6
+        try await waitUntil { !model.isBusy && model.loops.ranges.count == 2 }
+        model.exportAll()
+        XCTAssertFalse(model.isBusy, "the join is refused before anything is rendered")
+        XCTAssertEqual(model.results.count, 1, "and nothing new is written")
+        let message = try XCTUnwrap(model.errorMessage)
+        XCTAssertTrue(message.contains("non-square pixels"), message)
+        XCTAssertTrue(message.contains("Export Each"), "it has to say what still works: " + message)
+    }
+
     @MainActor
     func testDraggingDoesNotSnapToThePlayheadThatFollowsIt() async throws {
         _ = NSApplication.shared

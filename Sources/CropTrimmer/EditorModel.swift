@@ -935,15 +935,16 @@ final class EditorModel: ObservableObject {
         guard let source, !isBusy, !showReview, !cropAdjusting, !hasInputErrors else { return }
         let entries = numberedEntries(all: true, target: nil)
         guard !entries.isEmpty else { return }
+        // One loop has nothing to join, and joining it would re-encode what the ordinary path can
+        // often copy outright, so a lone loop exports exactly as Export Each would export it —
+        // including on a movie no encode may touch, which that path can still copy.
+        guard entries.count > 1 else { return beginExport(all: true) }
         // Joining always encodes, so a movie no encode may touch is refused here rather than after
         // the last loop has been rendered. Export Each can still copy each loop out untouched.
         if let restriction = source.encodingRestriction, restriction != MediaEngine.oddDimensionRestriction {
             errorMessage = restriction + " Joining re-encodes, so these loops cannot be chained into one clip. Export Each still exports them separately."
             return
         }
-        // One loop has nothing to join, and joining it would re-encode what the ordinary path can
-        // often copy outright, so a lone loop exports exactly as Export Each would export it.
-        guard entries.count > 1 else { return beginExport(all: true) }
         guard let frame = joinFrameChoice(entries.map { frameSize(of: $0.1, source: source) }) else { return }
         chooseDirectory(source: source) { [weak self] directory in
             self?.startJoinedExport(source: source, entries: entries, directory: directory, frame: frame)
